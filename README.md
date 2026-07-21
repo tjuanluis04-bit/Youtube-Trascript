@@ -39,6 +39,21 @@ restricción de YouTube, no de la app).
 6. Pasa el APK a tu teléfono e instálalo (necesitarás permitir
    "instalar apps de origen desconocido" en Android).
 
+### Si el build falla
+
+El workflow compila con Buildozer directamente en el runner de Ubuntu
+(sin depender de acciones de Docker de terceros, que a veces se rompen).
+Si aun así falla:
+
+1. Abre el run fallido en la pestaña **Actions** y expande el paso
+   **"Compilar APK"** — ahí está el error real, normalmente cerca del
+   final del log.
+2. Copia ese fragmento del error y compártelo para poder ajustar
+   `buildozer.spec` o las dependencias del sistema según haga falta.
+3. Errores comunes: falta algún paquete del sistema para una librería
+   nueva en `requirements`, o una versión de Cython/Kivy incompatible
+   entre sí.
+
 ### Subir el proyecto a GitHub desde cero (por línea de comandos)
 
 ```bash
