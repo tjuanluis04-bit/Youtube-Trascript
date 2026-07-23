@@ -144,7 +144,8 @@ class RootWidget(BoxLayout):
 
     def _fetch_thread(self, video_id, mode):
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            ytt_api = YouTubeTranscriptApi()
+            transcript_list = ytt_api.list(video_id)
             available_codes = [t.language_code for t in transcript_list]
             if not available_codes:
                 raise NoTranscriptFound(video_id, [], transcript_list)

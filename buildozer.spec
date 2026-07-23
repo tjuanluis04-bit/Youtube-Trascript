@@ -9,7 +9,7 @@ source.include_exts = py,png,jpg,kv,atlas
 
 version = 1.0
 
-requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,youtube-transcript-api,requests,certifi,charset-normalizer,idna,urllib3,defusedxml
+requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,youtube-transcript-api==1.2.2,requests,certifi,charset-normalizer,idna,urllib3,defusedxml
 
 orientation = portrait
 fullscreen = 0
