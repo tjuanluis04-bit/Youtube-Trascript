@@ -31,6 +31,8 @@ jobs:
         run: |
           export PATH=$PATH:$HOME/.local/bin
           export PIP_NO_CACHE_DIR=1
+          echo "pip<26" > /tmp/pip-constraints.txt
+          export PIP_CONSTRAINT=/tmp/pip-constraints.txt
           yes | buildozer -v android debug
 
       - name: Subir el APK generado
