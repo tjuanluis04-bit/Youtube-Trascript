@@ -18,6 +18,8 @@ from kivy.lang import Builder
 from kivy.factory import Factory
 from kivy.clock import mainthread, Clock
 from kivy.core.clipboard import Clipboard
+from kivy.core.image import Image as CoreImage
+from kivy.loader import Loader
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.widget import Widget
 from kivy.properties import StringProperty, NumericProperty
@@ -39,11 +41,13 @@ from youtube_transcript_api._errors import (
 CACHE_LOCK = threading.Lock()
 
 # PNG transparente de 1x1 usado como marcador mientras carga una imagen,
-# para no mostrar el ícono giratorio de "cargando" por defecto de Kivy.
+# para reemplazar el ícono giratorio de "cargando" por defecto de Kivy.
 _BLANK_PNG_B64 = (
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk'
     '+A8AAQUBAScY42YAAAAASUVORK5CYII='
 )
+
+BRACKET_RE = re.compile(r'\[[^\]]*\]')
 
 KV = '''
 <StyledButton@Button>:
@@ -93,8 +97,6 @@ KV = '''
 
     AsyncImage:
         source: root.thumbnail_url
-        loading_image: app.blank_image_path
-        error_image: app.blank_image_path
         size_hint_y: None
         height: self.width * 9 / 16
         allow_stretch: True
@@ -113,12 +115,26 @@ KV = '''
         color: root.card_status_color
         font_size: '13sp'
 
-    TextInput:
-        text: root.transcript_text
-        readonly: True
+    ScrollView:
         size_hint_y: None
-        height: self.minimum_height
-        font_size: '14sp'
+        height: dp(340)
+        do_scroll_x: False
+        canvas.before:
+            Color:
+                rgba: 0.93, 0.93, 0.93, 1
+            Rectangle:
+                pos: self.pos
+                size: self.size
+        Label:
+            text: root.transcript_text or ' '
+            size_hint_y: None
+            height: max(self.texture_size[1] + dp(16), dp(340))
+            text_size: self.width - dp(16), None
+            padding: [dp(8), dp(8)]
+            font_size: '14sp'
+            color: 0.05, 0.05, 0.05, 1
+            halign: 'left'
+            valign: 'top'
 
     StyledButton:
         id: copy_button
@@ -151,6 +167,13 @@ KV = '''
         height: dp(90)
         font_size: '15sp'
 
+    StyledButton:
+        text: '📋 Pegar desde el portapapeles'
+        size_hint_y: None
+        height: dp(38)
+        font_size: '13sp'
+        on_release: root.paste_link()
+
     BoxLayout:
         size_hint_y: None
         height: dp(44)
@@ -168,6 +191,14 @@ KV = '''
             id: btn_both
             text: 'Ambos'
             group: 'lang'
+
+    BoxLayout:
+        size_hint_y: None
+        height: dp(38)
+        ToggleButton:
+            id: btn_brackets
+            text: 'Incluir texto entre [corchetes]'
+            font_size: '13sp'
 
     StyledButton:
         id: fetch_button
@@ -189,6 +220,15 @@ KV = '''
         size_hint_y: None
         height: dp(26)
         color: 0.85, 0.85, 0.85, 1
+
+    StyledButton:
+        id: export_button
+        text: 'Exportar lote a .txt (uno por video)'
+        size_hint_y: None
+        height: dp(46) if root.ids.results_container.children else 0
+        opacity: 1 if root.ids.results_container.children else 0
+        disabled: not root.ids.results_container.children
+        on_release: root.export_batch()
 
     ScrollView:
         BoxLayout:
@@ -302,10 +342,19 @@ class RootWidget(BoxLayout):
         except Exception:
             pass
 
-    def _cache_key(self, video_id, mode):
-        return f'{video_id}:{mode}'
+    def _cache_key(self, video_id, mode, keep_brackets):
+        return f'{video_id}:{mode}:{"b1" if keep_brackets else "b0"}'
 
     # ---------- utilidades ----------
+
+    def paste_link(self):
+        pasted = Clipboard.paste()
+        if not pasted:
+            return
+        current = self.ids.url_input.text
+        if current and not current.endswith('\n'):
+            current += '\n'
+        self.ids.url_input.text = current + pasted.strip()
 
     def extract_video_ids(self, text):
         """Extrae los IDs de video de una o varias líneas, con o sin
@@ -331,14 +380,18 @@ class RootWidget(BoxLayout):
                     break
         return ids
 
-    def _join(self, data):
+    def _join(self, data, keep_brackets):
         parts = []
         for item in data:
             t = item['text'] if isinstance(item, dict) else item.text
             t = t.replace('\n', ' ').strip()
             if t:
                 parts.append(t)
-        return ' '.join(parts)
+        text = ' '.join(parts)
+        if not keep_brackets:
+            text = BRACKET_RE.sub('', text)
+            text = re.sub(r'\s{2,}', ' ', text).strip()
+        return text
 
     def _resolve_thumbnail_url(self, video_id):
         """Prueba varias resoluciones de miniatura, ya que 'maxresdefault'
@@ -371,10 +424,12 @@ class RootWidget(BoxLayout):
 
     # ---------- indicador de progreso ----------
 
+    @mainthread
     def _start_progress(self):
         self.ids.fetch_button.disabled = True
         self.ids.loading_bar.start()
 
+    @mainthread
     def _stop_progress(self):
         self.ids.fetch_button.disabled = False
         self.ids.loading_bar.stop()
@@ -401,23 +456,27 @@ class RootWidget(BoxLayout):
         else:
             mode = 'original'
 
+        keep_brackets = self.ids.btn_brackets.state == 'down'
+
         self._start_progress()
         threading.Thread(
-            target=self._process_batch, args=(video_ids, mode), daemon=True
+            target=self._process_batch, args=(video_ids, mode, keep_brackets), daemon=True
         ).start()
 
-    def _process_batch(self, video_ids, mode):
+    def _process_batch(self, video_ids, mode, keep_brackets):
         total = len(video_ids)
-        for i, video_id in enumerate(video_ids, start=1):
-            self._set_status(f'Procesando video {i} de {total}...')
-            self._process_one(video_id, mode)
-            if i < total:
-                time.sleep(1.5)  # ser gentil con YouTube entre peticiones
-        self._stop_progress()
-        self._set_status(f'Listo ✓ ({total} video{"s" if total != 1 else ""})')
+        try:
+            for i, video_id in enumerate(video_ids, start=1):
+                self._set_status(f'Procesando video {i} de {total}...')
+                self._process_one(video_id, mode, keep_brackets)
+                if i < total:
+                    time.sleep(1.5)  # ser gentil con YouTube entre peticiones
+        finally:
+            self._stop_progress()
+            self._set_status(f'Listo ✓ ({total} video{"s" if total != 1 else ""})')
 
-    def _process_one(self, video_id, mode):
-        cache_key = self._cache_key(video_id, mode)
+    def _process_one(self, video_id, mode, keep_brackets):
+        cache_key = self._cache_key(video_id, mode, keep_brackets)
         cached = self._cache.get(cache_key)
 
         if cached:
@@ -436,19 +495,24 @@ class RootWidget(BoxLayout):
             original = transcript_list.find_transcript(available_codes)
 
             if mode == 'original':
-                result = self._join(self._with_retry(original.fetch))
-            elif mode == 'es':
-                result = self._get_spanish(transcript_list, original)
-            else:
-                text_o = self._join(self._with_retry(original.fetch))
-                text_e = self._get_spanish(transcript_list, original)
-                result = (
-                    f"--- IDIOMA ORIGINAL ({original.language_code}) ---\n\n"
-                    f"{text_o}\n\n--- ESPAÑOL ---\n\n{text_e}"
-                )
+                body = self._join(self._with_retry(original.fetch), keep_brackets)
+                result = f"{title}\n\n{body}" if title else body
 
-            if title:
-                result = f"{title}\n\n{result}"
+            elif mode == 'es':
+                body = self._get_spanish(transcript_list, original, keep_brackets)
+                title_es = self._translate_title(title) if title else title
+                result = f"{title_es}\n\n{body}" if title_es else body
+
+            else:  # ambos
+                text_o = self._join(self._with_retry(original.fetch), keep_brackets)
+                text_e = self._get_spanish(transcript_list, original, keep_brackets)
+                title_es = self._translate_title(title) if title else title
+                header = f"{title}\n\n" if title else ""
+                result = (
+                    f"{header}--- IDIOMA ORIGINAL ({original.language_code}) ---\n\n"
+                    f"{text_o}\n\n--- ESPAÑOL ---\n\n"
+                    f"{(title_es + chr(10) + chr(10)) if title_es else ''}{text_e}"
+                )
 
             self._cache[cache_key] = {
                 'title': title, 'thumbnail': thumbnail_url, 'text': result,
@@ -487,22 +551,33 @@ class RootWidget(BoxLayout):
                     time.sleep(delay)
         raise last_exc
 
-    def _get_spanish(self, transcript_list, original):
+    def _get_spanish(self, transcript_list, original, keep_brackets):
         """Subtítulos ya en español si existen; si no, traduce. Primero
         intenta la traducción propia de YouTube y, si esta es bloqueada,
         usa Google Translate como alternativa."""
         try:
             es_transcript = transcript_list.find_transcript(['es', 'es-ES', 'es-419'])
-            return self._join(self._with_retry(es_transcript.fetch))
+            return self._join(self._with_retry(es_transcript.fetch), keep_brackets)
         except NoTranscriptFound:
             pass
 
-        original_text = self._join(self._with_retry(original.fetch))
+        original_text = self._join(self._with_retry(original.fetch), keep_brackets)
         try:
             translated = original.translate('es')
-            return self._join(self._with_retry(translated.fetch))
+            return self._join(self._with_retry(translated.fetch), keep_brackets)
         except RequestBlocked:
             return self._translate_offline(original_text)
+
+    def _translate_title(self, title):
+        """Traduce el título para que quede coherente con un texto ya
+        traducido al español (antes se dejaba sin traducir por error)."""
+        if not title:
+            return title
+        try:
+            from deep_translator import GoogleTranslator
+            return GoogleTranslator(source='auto', target='es').translate(title)
+        except Exception:
+            return title
 
     def _translate_offline(self, text):
         """Alternativa de traducción cuando YouTube bloquea su propio
@@ -544,6 +619,34 @@ class RootWidget(BoxLayout):
         card.card_status = error
         self.ids.results_container.add_widget(card)
 
+    # ---------- exportar lote ----------
+
+    def export_batch(self):
+        cards = list(self.ids.results_container.children)
+        if not cards:
+            return
+        threading.Thread(target=self._export_thread, args=(cards,), daemon=True).start()
+
+    def _export_thread(self, cards):
+        count, errors = 0, 0
+        # los widgets se agregan al inicio de 'children', así que se invierte
+        # para exportar en el mismo orden en que se procesaron los videos.
+        for card in reversed(cards):
+            if not getattr(card, 'transcript_text', ''):
+                continue
+            safe_name = re.sub(r'[\\/*?:"<>|]', '_', card.video_title or card.video_id or 'transcripcion')
+            safe_name = safe_name.strip()[:80] or (card.video_id or 'transcripcion')
+            filename = f'{safe_name}.txt'
+            try:
+                self.save_text_public(card.transcript_text.encode('utf-8'), filename)
+                count += 1
+            except Exception:
+                errors += 1
+        msg = f'{count} archivo(s) exportado(s) a Descargas'
+        if errors:
+            msg += f' ({errors} fallaron)'
+        self._set_status(msg)
+
     # ---------- almacenamiento ----------
 
     def save_image_public(self, data, filename):
@@ -551,39 +654,56 @@ class RootWidget(BoxLayout):
         Fotos), con respaldo a la carpeta privada de la app si algo falla."""
         if platform == 'android':
             try:
-                return self._save_to_media_store(data, filename)
+                return self._save_to_media_store_images(data, filename)
             except Exception:
                 pass
             try:
                 return self._save_to_app_storage(data, filename)
             except Exception as e:
                 raise e
-        # Escritorio (pruebas locales)
         path = os.path.join(os.getcwd(), filename)
         with open(path, 'wb') as f:
             f.write(data)
         return path
 
-    def _save_to_media_store(self, data, filename):
-        from jnius import autoclass
+    def save_text_public(self, data, filename):
+        """Guarda un archivo de texto en la carpeta pública de Descargas,
+        con respaldo a la carpeta privada de la app si algo falla."""
+        if platform == 'android':
+            try:
+                return self._save_to_media_store_downloads(data, filename)
+            except Exception:
+                pass
+            try:
+                return self._save_to_app_storage(data, filename)
+            except Exception as e:
+                raise e
+        path = os.path.join(os.getcwd(), filename)
+        with open(path, 'wb') as f:
+            f.write(data)
+        return path
 
-        PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        context = PythonActivity.mActivity
-
+    def _request_legacy_storage_permission(self, VERSION_SDK_INT):
         try:
             from android.permissions import request_permissions, Permission, check_permission
-            VERSION = autoclass('android.os.Build$VERSION')
-            if VERSION.SDK_INT < 29:
+            if VERSION_SDK_INT < 29:
                 if not check_permission(Permission.WRITE_EXTERNAL_STORAGE):
                     request_permissions([Permission.WRITE_EXTERNAL_STORAGE])
                     time.sleep(1.0)
         except Exception:
             pass
 
+    def _save_to_media_store_images(self, data, filename):
+        from jnius import autoclass
+
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        context = PythonActivity.mActivity
+        VERSION = autoclass('android.os.Build$VERSION')
+        self._request_legacy_storage_permission(VERSION.SDK_INT)
+
         ContentValues = autoclass('android.content.ContentValues')
         MediaColumns = autoclass('android.provider.MediaStore$MediaColumns')
         MediaImages = autoclass('android.provider.MediaStore$Images$Media')
-        VERSION = autoclass('android.os.Build$VERSION')
 
         values = ContentValues()
         values.put(MediaColumns.DISPLAY_NAME, filename)
@@ -602,6 +722,43 @@ class RootWidget(BoxLayout):
         out_stream.close()
         return 'la galería (Fotos > TranscripcionesYoutube)'
 
+    def _save_to_media_store_downloads(self, data, filename):
+        from jnius import autoclass
+
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        context = PythonActivity.mActivity
+        VERSION = autoclass('android.os.Build$VERSION')
+        self._request_legacy_storage_permission(VERSION.SDK_INT)
+
+        if VERSION.SDK_INT >= 29:
+            ContentValues = autoclass('android.content.ContentValues')
+            MediaColumns = autoclass('android.provider.MediaStore$MediaColumns')
+            Downloads = autoclass('android.provider.MediaStore$Downloads')
+            values = ContentValues()
+            values.put(MediaColumns.DISPLAY_NAME, filename)
+            values.put(MediaColumns.MIME_TYPE, 'text/plain')
+            values.put(MediaColumns.RELATIVE_PATH, 'Download/TranscripcionesYoutube')
+            resolver = context.getContentResolver()
+            uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
+            if uri is None:
+                raise Exception('No se pudo crear el archivo')
+            out_stream = resolver.openOutputStream(uri)
+            out_stream.write(bytearray(data))
+            out_stream.flush()
+            out_stream.close()
+            return 'Descargas/TranscripcionesYoutube'
+        else:
+            Environment = autoclass('android.os.Environment')
+            downloads_dir = Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS
+            )
+            base = downloads_dir.getAbsolutePath()
+            os.makedirs(base, exist_ok=True)
+            path = os.path.join(base, filename)
+            with open(path, 'wb') as f:
+                f.write(data)
+            return path
+
     def _save_to_app_storage(self, data, filename):
         from jnius import autoclass
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
@@ -617,22 +774,25 @@ class RootWidget(BoxLayout):
 
 class TranscriptApp(App):
     title = 'Transcripciones YouTube'
-    blank_image_path = StringProperty('')
 
     def build(self):
-        self._prepare_blank_image()
+        self._disable_default_loading_spinner()
         return RootWidget()
 
-    def _prepare_blank_image(self):
+    def _disable_default_loading_spinner(self):
+        """Reemplaza el ícono giratorio de 'cargando' que Kivy muestra por
+        defecto en toda imagen asíncrona (AsyncImage) mientras se descarga."""
         try:
             path = os.path.join(self.user_data_dir, 'blank.png')
+            os.makedirs(self.user_data_dir, exist_ok=True)
             if not os.path.exists(path):
-                os.makedirs(self.user_data_dir, exist_ok=True)
                 with open(path, 'wb') as f:
                     f.write(base64.b64decode(_BLANK_PNG_B64))
-            self.blank_image_path = path
+            blank = CoreImage(path)
+            Loader.loading_image = blank
+            Loader.error_image = blank
         except Exception:
-            self.blank_image_path = ''
+            pass
 
 
 if __name__ == '__main__':
