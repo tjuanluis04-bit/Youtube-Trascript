@@ -234,6 +234,13 @@ KV = '''
         disabled: not root.ids.results_container.children
         on_release: root.export_batch()
 
+    StyledButton:
+        text: 'Vaciar caché (forzar volver a obtener)'
+        size_hint_y: None
+        height: dp(38)
+        font_size: '13sp'
+        on_release: root.clear_cache()
+
     ScrollView:
         BoxLayout:
             id: results_container
@@ -346,6 +353,11 @@ class RootWidget(BoxLayout):
                     json.dump(self._cache, f, ensure_ascii=False)
         except Exception:
             pass
+
+    def clear_cache(self):
+        self._cache = {}
+        self._save_cache()
+        self._set_status('Caché vaciado ✓ (los próximos videos se volverán a obtener)')
 
     def _cache_key(self, video_id, mode, keep_brackets):
         return f'{video_id}:{mode}:{"b1" if keep_brackets else "b0"}'
