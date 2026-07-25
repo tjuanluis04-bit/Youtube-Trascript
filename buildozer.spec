@@ -7,14 +7,14 @@ package.domain = org.miapp
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
-version = 1.1
+version = 1.2
 
 requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,youtube-transcript-api==1.2.4,requests,certifi,charset-normalizer,idna,urllib3,defusedxml,deep-translator,beautifulsoup4,soupsieve
 
 orientation = portrait
 fullscreen = 0
 
-android.permissions = INTERNET
+android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 
 android.api = 34
 android.minapi = 21

@@ -10,6 +10,7 @@ import os
 import re
 import json
 import time
+import base64
 import threading
 
 from kivy.app import App
@@ -37,7 +38,28 @@ from youtube_transcript_api._errors import (
 
 CACHE_LOCK = threading.Lock()
 
+# PNG transparente de 1x1 usado como marcador mientras carga una imagen,
+# para no mostrar el ícono giratorio de "cargando" por defecto de Kivy.
+_BLANK_PNG_B64 = (
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk'
+    '+A8AAQUBAScY42YAAAAASUVORK5CYII='
+)
+
 KV = '''
+<StyledButton@Button>:
+    background_normal: ''
+    background_down: ''
+    background_color: 0, 0, 0, 0
+    color: 1, 1, 1, 1
+    bold: True
+    canvas.before:
+        Color:
+            rgba: (0.20, 0.20, 0.22, 1) if self.state == 'normal' else (0.30, 0.30, 0.33, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(12)]
+
 <LoadingBar>:
     canvas:
         Color:
@@ -58,7 +80,7 @@ KV = '''
     size_hint_y: None
     height: self.minimum_height
     spacing: dp(6)
-    padding: [0, dp(4), 0, dp(14)]
+    padding: [0, dp(4), 0, dp(16)]
 
     Label:
         text: root.video_title or '(sin título)'
@@ -71,22 +93,24 @@ KV = '''
 
     AsyncImage:
         source: root.thumbnail_url
+        loading_image: app.blank_image_path
+        error_image: app.blank_image_path
         size_hint_y: None
         height: self.width * 9 / 16
         allow_stretch: True
         keep_ratio: True
 
-    Button:
+    StyledButton:
         text: 'Descargar miniatura'
         size_hint_y: None
-        height: dp(42)
+        height: dp(44)
         on_release: root.download_thumbnail()
 
     Label:
         text: root.card_status
         size_hint_y: None
         height: dp(20) if root.card_status else 0
-        color: 0.75, 0.15, 0.15, 1
+        color: root.card_status_color
         font_size: '13sp'
 
     TextInput:
@@ -96,10 +120,11 @@ KV = '''
         height: self.minimum_height
         font_size: '14sp'
 
-    Button:
+    StyledButton:
+        id: copy_button
         text: 'Copiar este texto'
         size_hint_y: None
-        height: dp(42)
+        height: dp(44)
         disabled: not root.transcript_text
         on_release: root.copy_text()
 
@@ -144,11 +169,11 @@ KV = '''
             text: 'Ambos'
             group: 'lang'
 
-    Button:
+    StyledButton:
         id: fetch_button
         text: 'Obtener transcripción(es)'
         size_hint_y: None
-        height: dp(50)
+        height: dp(52)
         font_size: '16sp'
         on_release: root.fetch_transcript()
 
@@ -176,6 +201,9 @@ KV = '''
 
 Builder.load_string(KV)
 
+COLOR_ERROR = (0.85, 0.30, 0.30, 1)
+COLOR_SUCCESS = (0.35, 0.75, 0.45, 1)
+
 
 class LoadingBar(Widget):
     fill_x = NumericProperty(0)
@@ -201,6 +229,7 @@ class ResultCard(BoxLayout):
     thumbnail_url = StringProperty('')
     transcript_text = StringProperty('')
     card_status = StringProperty('')
+    card_status_color = list(COLOR_ERROR)
     video_id = StringProperty('')
 
     def download_thumbnail(self):
@@ -213,28 +242,32 @@ class ResultCard(BoxLayout):
             resp = requests.get(self.thumbnail_url, timeout=15)
             resp.raise_for_status()
             filename = f'miniatura_{self.video_id or "youtube"}.jpg'
-            save_dir = App.get_running_app().root.get_downloads_dir()
-            path = os.path.join(save_dir, filename)
-            with open(path, 'wb') as f:
-                f.write(resp.content)
-            self._set_status(f'Miniatura guardada: {path}')
+            saved_where = App.get_running_app().root.save_image_public(
+                resp.content, filename
+            )
+            self._set_status(f'Miniatura guardada en {saved_where}', success=True)
         except Exception as e:
-            self._set_status(f'No se pudo descargar la miniatura: {e}')
+            self._set_status(f'No se pudo descargar la miniatura: {e}', success=False)
 
     @mainthread
-    def _set_status(self, text):
+    def _set_status(self, text, success):
+        self.card_status_color = list(COLOR_SUCCESS if success else COLOR_ERROR)
         self.card_status = text
 
     def copy_text(self):
-        if self.transcript_text:
-            Clipboard.copy(self.transcript_text)
-            self.card_status = 'Texto copiado ✓'
+        if not self.transcript_text:
+            return
+        Clipboard.copy(self.transcript_text)
+        self._set_status('Texto copiado ✓', success=True)
+        btn = self.ids.get('copy_button')
+        if btn:
+            original = btn.text
+            btn.text = '¡Copiado! ✓'
+            Clock.schedule_once(lambda dt: setattr(btn, 'text', original), 1.4)
 
 
 class RootWidget(BoxLayout):
 
-    _spinner_event = None
-    _spinner_index = 0
     _cache = {}
     _cache_path = None
 
@@ -414,6 +447,9 @@ class RootWidget(BoxLayout):
                     f"{text_o}\n\n--- ESPAÑOL ---\n\n{text_e}"
                 )
 
+            if title:
+                result = f"{title}\n\n{result}"
+
             self._cache[cache_key] = {
                 'title': title, 'thumbnail': thumbnail_url, 'text': result,
             }
@@ -503,32 +539,100 @@ class RootWidget(BoxLayout):
         card.thumbnail_url = thumbnail_url
         card.transcript_text = text
         card.video_id = video_id
+        if error:
+            card.card_status_color = list(COLOR_ERROR)
         card.card_status = error
         self.ids.results_container.add_widget(card)
 
     # ---------- almacenamiento ----------
 
-    def get_downloads_dir(self):
+    def save_image_public(self, data, filename):
+        """Guarda una imagen en la galería pública del teléfono (visible en
+        Fotos), con respaldo a la carpeta privada de la app si algo falla."""
         if platform == 'android':
             try:
-                from jnius import autoclass
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                context = PythonActivity.mActivity
-                ext_dir = context.getExternalFilesDir(None)
-                if ext_dir is not None:
-                    path = ext_dir.getAbsolutePath()
-                    os.makedirs(path, exist_ok=True)
-                    return path
+                return self._save_to_media_store(data, filename)
             except Exception:
                 pass
-        return os.getcwd()
+            try:
+                return self._save_to_app_storage(data, filename)
+            except Exception as e:
+                raise e
+        # Escritorio (pruebas locales)
+        path = os.path.join(os.getcwd(), filename)
+        with open(path, 'wb') as f:
+            f.write(data)
+        return path
+
+    def _save_to_media_store(self, data, filename):
+        from jnius import autoclass
+
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        context = PythonActivity.mActivity
+
+        try:
+            from android.permissions import request_permissions, Permission, check_permission
+            VERSION = autoclass('android.os.Build$VERSION')
+            if VERSION.SDK_INT < 29:
+                if not check_permission(Permission.WRITE_EXTERNAL_STORAGE):
+                    request_permissions([Permission.WRITE_EXTERNAL_STORAGE])
+                    time.sleep(1.0)
+        except Exception:
+            pass
+
+        ContentValues = autoclass('android.content.ContentValues')
+        MediaColumns = autoclass('android.provider.MediaStore$MediaColumns')
+        MediaImages = autoclass('android.provider.MediaStore$Images$Media')
+        VERSION = autoclass('android.os.Build$VERSION')
+
+        values = ContentValues()
+        values.put(MediaColumns.DISPLAY_NAME, filename)
+        values.put(MediaColumns.MIME_TYPE, 'image/jpeg')
+        if VERSION.SDK_INT >= 29:
+            values.put(MediaColumns.RELATIVE_PATH, 'Pictures/TranscripcionesYoutube')
+
+        resolver = context.getContentResolver()
+        uri = resolver.insert(MediaImages.EXTERNAL_CONTENT_URI, values)
+        if uri is None:
+            raise Exception('No se pudo crear el archivo en la galería')
+
+        out_stream = resolver.openOutputStream(uri)
+        out_stream.write(bytearray(data))
+        out_stream.flush()
+        out_stream.close()
+        return 'la galería (Fotos > TranscripcionesYoutube)'
+
+    def _save_to_app_storage(self, data, filename):
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        context = PythonActivity.mActivity
+        ext_dir = context.getExternalFilesDir(None)
+        base = ext_dir.getAbsolutePath() if ext_dir is not None else os.getcwd()
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, filename)
+        with open(path, 'wb') as f:
+            f.write(data)
+        return path
 
 
 class TranscriptApp(App):
     title = 'Transcripciones YouTube'
+    blank_image_path = StringProperty('')
 
     def build(self):
+        self._prepare_blank_image()
         return RootWidget()
+
+    def _prepare_blank_image(self):
+        try:
+            path = os.path.join(self.user_data_dir, 'blank.png')
+            if not os.path.exists(path):
+                os.makedirs(self.user_data_dir, exist_ok=True)
+                with open(path, 'wb') as f:
+                    f.write(base64.b64decode(_BLANK_PNG_B64))
+            self.blank_image_path = path
+        except Exception:
+            self.blank_image_path = ''
 
 
 if __name__ == '__main__':
