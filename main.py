@@ -115,28 +115,30 @@ KV = '''
         color: root.card_status_color
         font_size: '13sp'
 
-    FloatLayout:
+    StyledButton:
+        id: copy_button_top
+        text: 'Copiar este texto'
         size_hint_y: None
-        height: dp(340)
+        height: dp(44)
+        disabled: not root.transcript_text
+        on_release: root.copy_text()
+
+    Label:
+        text: root.transcript_text or ' '
+        size_hint_y: None
+        height: self.texture_size[1] + dp(16)
+        text_size: self.width - dp(16), None
+        padding: [dp(8), dp(8)]
+        font_size: '14sp'
+        color: 0.05, 0.05, 0.05, 1
+        halign: 'left'
+        valign: 'top'
         canvas.before:
             Color:
                 rgba: 0.93, 0.93, 0.93, 1
             Rectangle:
                 pos: self.pos
                 size: self.size
-        ScrollView:
-            size_hint: 1, 1
-            do_scroll_x: False
-            Label:
-                text: root.transcript_text or ' '
-                size_hint_y: None
-                height: max(self.texture_size[1] + dp(16), dp(340))
-                text_size: self.width - dp(16), None
-                padding: [dp(8), dp(8)]
-                font_size: '14sp'
-                color: 0.05, 0.05, 0.05, 1
-                halign: 'left'
-                valign: 'top'
 
     StyledButton:
         id: copy_button
@@ -301,11 +303,12 @@ class ResultCard(BoxLayout):
             return
         Clipboard.copy(self.transcript_text)
         self._set_status('Texto copiado ✓', success=True)
-        btn = self.ids.get('copy_button')
-        if btn:
-            original = btn.text
-            btn.text = '¡Copiado! ✓'
-            Clock.schedule_once(lambda dt: setattr(btn, 'text', original), 1.4)
+        for btn_id in ('copy_button_top', 'copy_button'):
+            btn = self.ids.get(btn_id)
+            if btn:
+                original = btn.text
+                btn.text = '¡Copiado! ✓'
+                Clock.schedule_once(lambda dt, b=btn, t=original: setattr(b, 'text', t), 1.4)
 
 
 class RootWidget(BoxLayout):
