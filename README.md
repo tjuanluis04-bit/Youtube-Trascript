@@ -7,17 +7,29 @@ marcas de tiempo**, en el idioma original del video y/o traducido al
 
 ## Cómo funciona
 
-1. Pegas el enlace del video (funciona con `youtube.com/watch?v=...`,
-   `youtu.be/...`, `youtube.com/shorts/...`, etc.).
-2. Eliges: "Idioma original", "Español" o "Ambos".
-3. Tocas "Obtener transcripción" y aparece el texto completo, listo para
-   copiar con el botón "Copiar texto".
+1. Pegas uno o varios enlaces de video, uno por línea (con o sin
+   numeración: "1.- link", "2) link", o el link solo). Funciona con
+   `youtube.com/watch?v=...`, `youtu.be/...`, `youtube.com/shorts/...`,
+   etc.
+2. Eliges: "Idioma original", "Español" o "Ambos" (aplica a todos los
+   enlaces del lote).
+3. Tocas "Obtener transcripción(es)". Por cada enlace aparece una
+   tarjeta independiente con: título, miniatura grande (16:9), botón
+   para descargar la miniatura, el texto transcrito y su propio botón
+   "Copiar este texto" — cada tarjeta se copia por separado y están
+   divididas por una línea.
 
 Internamente usa la librería `youtube-transcript-api`, que lee los
 subtítulos/CC del video. Si el video no tiene subtítulos en español pero
-sí tiene subtítulos (manuales o automáticos) en cualquier otro idioma, la
-app usa la función de traducción automática de YouTube para generar el
-texto en español.
+sí en cualquier otro idioma, la app primero intenta la traducción
+automática de YouTube; si YouTube bloquea esa función temporalmente
+(pasa seguido si se piden muchas traducciones seguidas), la app cae
+automáticamente a traducir por su cuenta con Google Translate
+(`deep-translator`) como alternativa.
+
+**Caché:** cada transcripción ya obtenida se guarda en el propio
+teléfono. Si vuelves a pedir el mismo video (con el mismo modo de
+idioma), aparece al instante sin volver a consultar YouTube.
 
 **Limitación importante:** si el video tiene los subtítulos deshabilitados
 por el creador, no existe transcripción que obtener (esto es una

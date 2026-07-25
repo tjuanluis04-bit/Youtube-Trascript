@@ -7,9 +7,9 @@ package.domain = org.miapp
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
-version = 1.0
+version = 1.1
 
-requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,youtube-transcript-api==1.2.4,requests,certifi,charset-normalizer,idna,urllib3,defusedxml
+requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,youtube-transcript-api==1.2.4,requests,certifi,charset-normalizer,idna,urllib3,defusedxml,deep-translator,beautifulsoup4,soupsieve
 
 orientation = portrait
 fullscreen = 0
