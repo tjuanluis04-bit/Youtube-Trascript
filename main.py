@@ -115,26 +115,28 @@ KV = '''
         color: root.card_status_color
         font_size: '13sp'
 
-    ScrollView:
+    FloatLayout:
         size_hint_y: None
         height: dp(340)
-        do_scroll_x: False
         canvas.before:
             Color:
                 rgba: 0.93, 0.93, 0.93, 1
             Rectangle:
                 pos: self.pos
                 size: self.size
-        Label:
-            text: root.transcript_text or ' '
-            size_hint_y: None
-            height: max(self.texture_size[1] + dp(16), dp(340))
-            text_size: self.width - dp(16), None
-            padding: [dp(8), dp(8)]
-            font_size: '14sp'
-            color: 0.05, 0.05, 0.05, 1
-            halign: 'left'
-            valign: 'top'
+        ScrollView:
+            size_hint: 1, 1
+            do_scroll_x: False
+            Label:
+                text: root.transcript_text or ' '
+                size_hint_y: None
+                height: max(self.texture_size[1] + dp(16), dp(340))
+                text_size: self.width - dp(16), None
+                padding: [dp(8), dp(8)]
+                font_size: '14sp'
+                color: 0.05, 0.05, 0.05, 1
+                halign: 'left'
+                valign: 'top'
 
     StyledButton:
         id: copy_button
