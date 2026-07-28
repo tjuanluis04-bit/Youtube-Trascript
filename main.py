@@ -123,22 +123,17 @@ KV = '''
         disabled: not root.transcript_text
         on_release: root.copy_text()
 
-    Label:
-        text: root.transcript_text or ' '
+    TextInput:
+        text: root.transcript_text
+        readonly: True
+        multiline: True
+        use_bubble: False
+        use_handles: False
+        selection_color: 0, 0, 0, 0
+        cursor_color: 0, 0, 0, 0
         size_hint_y: None
-        height: self.texture_size[1] + dp(16)
-        text_size: self.width - dp(16), None
-        padding: [dp(8), dp(8)]
+        height: self.minimum_height
         font_size: '14sp'
-        color: 0.05, 0.05, 0.05, 1
-        halign: 'left'
-        valign: 'top'
-        canvas.before:
-            Color:
-                rgba: 0.93, 0.93, 0.93, 1
-            Rectangle:
-                pos: self.pos
-                size: self.size
 
     StyledButton:
         id: copy_button
