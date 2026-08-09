@@ -199,6 +199,59 @@ KV = '''
             text: 'Incluir texto entre [corchetes]'
             font_size: '13sp'
 
+    Label:
+        text: '— o transcribe los videos más recientes de un canal —'
+        size_hint_y: None
+        height: dp(24)
+        color: 0.6, 0.6, 0.6, 1
+        font_size: '12sp'
+
+    TextInput:
+        id: api_key_input
+        hint_text: 'Clave de API de YouTube (se guarda en tu teléfono)'
+        multiline: False
+        password: True
+        size_hint_y: None
+        height: dp(42)
+        font_size: '13sp'
+
+    TextInput:
+        id: channel_input
+        hint_text: 'Enlace del canal o @usuario (ej. @psychacks)'
+        multiline: False
+        size_hint_y: None
+        height: dp(42)
+        font_size: '13sp'
+
+    BoxLayout:
+        size_hint_y: None
+        height: dp(40)
+        spacing: dp(4)
+        ToggleButton:
+            id: count_5
+            text: '5 videos'
+            group: 'chcount'
+        ToggleButton:
+            id: count_10
+            text: '10 videos'
+            group: 'chcount'
+            state: 'down'
+        ToggleButton:
+            id: count_20
+            text: '20 videos'
+            group: 'chcount'
+        ToggleButton:
+            id: count_30
+            text: '30 videos'
+            group: 'chcount'
+
+    StyledButton:
+        text: 'Obtener videos del canal (excluye Shorts y en vivo)'
+        size_hint_y: None
+        height: dp(48)
+        font_size: '14sp'
+        on_release: root.fetch_channel()
+
     StyledButton:
         id: fetch_button
         text: 'Obtener transcripción(es)'
@@ -321,6 +374,9 @@ class RootWidget(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._load_cache()
+        settings = self._load_settings()
+        if settings.get('api_key'):
+            self.ids.api_key_input.text = settings['api_key']
 
     # ---------- caché ----------
 
@@ -356,6 +412,31 @@ class RootWidget(BoxLayout):
 
     def _cache_key(self, video_id, mode, keep_brackets):
         return f'{video_id}:{mode}:{"b1" if keep_brackets else "b0"}'
+
+    # ---------- configuración (clave de API) ----------
+
+    def _get_settings_path(self):
+        app = App.get_running_app()
+        base = app.user_data_dir if app else '.'
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, 'settings.json')
+
+    def _load_settings(self):
+        try:
+            path = self._get_settings_path()
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+    def _save_settings(self, api_key):
+        try:
+            with open(self._get_settings_path(), 'w', encoding='utf-8') as f:
+                json.dump({'api_key': api_key}, f)
+        except Exception:
+            pass
 
     # ---------- utilidades ----------
 
@@ -486,6 +567,181 @@ class RootWidget(BoxLayout):
         finally:
             self._stop_progress()
             self._set_status(f'Listo ✓ ({total} video{"s" if total != 1 else ""})')
+
+    # ---------- transcribir un canal completo ----------
+
+    def fetch_channel(self):
+        api_key = self.ids.api_key_input.text.strip()
+        channel_input = self.ids.channel_input.text.strip()
+        if not api_key:
+            self._set_status('Falta la clave de API de YouTube (ver instrucciones)')
+            return
+        if not channel_input:
+            self._set_status('Falta el enlace o @usuario del canal')
+            return
+        self._save_settings(api_key)
+
+        count = 10
+        for n in (5, 10, 20, 30):
+            btn = self.ids.get(f'count_{n}')
+            if btn and btn.state == 'down':
+                count = n
+                break
+
+        if self.ids.btn_spanish.state == 'down':
+            mode = 'es'
+        elif self.ids.btn_both.state == 'down':
+            mode = 'both'
+        else:
+            mode = 'original'
+        keep_brackets = self.ids.btn_brackets.state == 'down'
+
+        self.ids.results_container.clear_widgets()
+        self._start_progress()
+        threading.Thread(
+            target=self._fetch_channel_thread,
+            args=(channel_input, api_key, count, mode, keep_brackets),
+            daemon=True,
+        ).start()
+
+    def _fetch_channel_thread(self, channel_input, api_key, count, mode, keep_brackets):
+        self._set_status('Buscando videos del canal...')
+        try:
+            video_ids = self._fetch_channel_video_ids(channel_input, api_key, count)
+        except Exception as e:
+            self._stop_progress()
+            self._set_status(f'No se pudo obtener el canal: {e}')
+            return
+        if not video_ids:
+            self._stop_progress()
+            self._set_status('No se encontraron videos (sin Shorts/en vivo) en ese canal')
+            return
+        self._process_batch(video_ids, mode, keep_brackets)
+
+    def _resolve_channel_id(self, channel_input, api_key):
+        """Acepta un enlace de canal (/channel/UC..., @usuario en la URL o
+        solo) y devuelve el ID de canal (UC...) usando la API oficial."""
+        channel_input = channel_input.strip()
+
+        m = re.search(r'channel/(UC[0-9A-Za-z_-]{22})', channel_input)
+        if m:
+            return m.group(1)
+
+        m = re.search(r'@([0-9A-Za-z_.-]+)', channel_input)
+        handle = m.group(1) if m else channel_input.lstrip('@').strip()
+
+        if handle and ' ' not in handle:
+            resp = requests.get(
+                'https://www.googleapis.com/youtube/v3/channels',
+                params={'part': 'id', 'forHandle': handle, 'key': api_key},
+                timeout=15,
+            )
+            items = resp.json().get('items', [])
+            if items:
+                return items[0]['id']
+
+            resp2 = requests.get(
+                'https://www.googleapis.com/youtube/v3/channels',
+                params={'part': 'id', 'forUsername': handle, 'key': api_key},
+                timeout=15,
+            )
+            items2 = resp2.json().get('items', [])
+            if items2:
+                return items2[0]['id']
+
+        resp3 = requests.get(
+            'https://www.googleapis.com/youtube/v3/search',
+            params={
+                'part': 'snippet', 'type': 'channel', 'q': channel_input,
+                'key': api_key, 'maxResults': 1,
+            },
+            timeout=15,
+        )
+        items3 = resp3.json().get('items', [])
+        if items3:
+            return items3[0]['snippet']['channelId']
+
+        raise Exception('No se pudo identificar el canal (revisa el enlace y la clave de API)')
+
+    def _get_uploads_playlist_id(self, channel_id, api_key):
+        resp = requests.get(
+            'https://www.googleapis.com/youtube/v3/channels',
+            params={'part': 'contentDetails', 'id': channel_id, 'key': api_key},
+            timeout=15,
+        )
+        items = resp.json().get('items', [])
+        if not items:
+            raise Exception('Canal no encontrado')
+        return items[0]['contentDetails']['relatedPlaylists']['uploads']
+
+    def _parse_iso8601_duration(self, s):
+        m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', s or '')
+        if not m:
+            return 0
+        h, mi, se = m.groups()
+        return int(h or 0) * 3600 + int(mi or 0) * 60 + int(se or 0)
+
+    def _fetch_channel_video_ids(self, channel_input, api_key, count):
+        """Devuelve hasta 'count' IDs de los videos más recientes del canal,
+        excluyendo Shorts (duración <= 60s) y transmisiones en vivo."""
+        channel_id = self._resolve_channel_id(channel_input, api_key)
+        uploads_id = self._get_uploads_playlist_id(channel_id, api_key)
+
+        result_ids = []
+        page_token = None
+        pages_scanned = 0
+        max_pages = 6  # tope de seguridad: hasta 300 videos recorridos
+
+        while len(result_ids) < count and pages_scanned < max_pages:
+            params = {
+                'part': 'contentDetails', 'playlistId': uploads_id,
+                'maxResults': 50, 'key': api_key,
+            }
+            if page_token:
+                params['pageToken'] = page_token
+
+            resp = requests.get(
+                'https://www.googleapis.com/youtube/v3/playlistItems',
+                params=params, timeout=15,
+            )
+            data = resp.json()
+            items = data.get('items', [])
+            pages_scanned += 1
+            if not items:
+                break
+
+            ids = [it['contentDetails']['videoId'] for it in items]
+
+            details_resp = requests.get(
+                'https://www.googleapis.com/youtube/v3/videos',
+                params={
+                    'part': 'contentDetails,liveStreamingDetails',
+                    'id': ','.join(ids), 'key': api_key,
+                },
+                timeout=15,
+            )
+            details = {d['id']: d for d in details_resp.json().get('items', [])}
+
+            for vid in ids:
+                d = details.get(vid)
+                if not d:
+                    continue
+                if 'liveStreamingDetails' in d:
+                    continue  # excluir transmisiones en vivo (pasadas o actuales)
+                duration = self._parse_iso8601_duration(
+                    d.get('contentDetails', {}).get('duration', '')
+                )
+                if duration <= 60:
+                    continue  # excluir Shorts
+                result_ids.append(vid)
+                if len(result_ids) >= count:
+                    break
+
+            page_token = data.get('nextPageToken')
+            if not page_token:
+                break
+
+        return result_ids
 
     def _process_one(self, video_id, mode, keep_brackets):
         cache_key = self._cache_key(video_id, mode, keep_brackets)

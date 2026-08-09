@@ -35,6 +35,33 @@ idioma), aparece al instante sin volver a consultar YouTube.
 por el creador, no existe transcripción que obtener (esto es una
 restricción de YouTube, no de la app).
 
+## Transcribir los videos recientes de un canal completo
+
+En vez de pegar enlaces uno por uno, puedes pedirle a la app los N
+videos más recientes de un canal (excluyendo Shorts y transmisiones en
+vivo automáticamente). Para esto se necesita una **clave de API de
+YouTube gratuita** (tuya, no de la app):
+
+1. Entra a [Google Cloud Console](https://console.cloud.google.com/),
+   crea un proyecto (gratis).
+2. Ve a "APIs y servicios" → "Biblioteca", busca **YouTube Data API
+   v3** y actívala.
+3. Ve a "Credenciales" → "Crear credenciales" → "Clave de API". Cópiala.
+4. Pégala en el campo "Clave de API de YouTube" de la app (se guarda en
+   tu teléfono, no se sube a ningún lado).
+5. Pega el enlace del canal o su `@usuario`, elige cuántos videos
+   recientes quieres (5/10/20/30) y toca "Obtener videos del canal".
+
+La clave gratuita incluye una cuota diaria (10,000 unidades) más que
+suficiente para uso normal — listar videos de un canal cuesta muy poco
+por petición.
+
+**Por qué no "todos los videos":** para canales con cientos o miles de
+videos, procesarlos todos de una sola vez no es práctico: tardaría
+horas y YouTube terminaría bloqueando las peticiones de transcripción
+temporalmente. Por eso se pide una cantidad acotada (hasta 30 a la vez);
+puedes repetir la operación para ir trayendo más tandas.
+
 ## Cómo compilar el APK con GitHub Actions
 
 1. Crea un repositorio nuevo en GitHub (puede ser privado).
