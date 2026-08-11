@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Transcripciones YouTube
-Obtiene el texto de la transcripción de uno o varios videos de YouTube a
-partir de sus enlaces, sin marcas de tiempo, en el idioma original y/o
-traducido al español. Incluye miniatura, caché local y modo por lotes.
+Obtiene el texto de la transcripción de videos de YouTube (por enlace o de
+un canal completo), sin marcas de tiempo, en el idioma original o en
+español. Incluye miniatura, caché local, exportación por lotes y descarga
+en pares imagen+texto organizados por canal.
 """
 
 import os
@@ -22,7 +23,7 @@ from kivy.core.image import Image as CoreImage
 from kivy.loader import Loader
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.widget import Widget
-from kivy.properties import StringProperty, NumericProperty
+from kivy.properties import StringProperty, NumericProperty, BooleanProperty
 from kivy.animation import Animation
 from kivy.metrics import dp
 from kivy.utils import platform
@@ -39,6 +40,9 @@ from youtube_transcript_api._errors import (
 )
 
 CACHE_LOCK = threading.Lock()
+BATCH_SIZE = 30
+BATCH_PAUSE_SECONDS = 30
+PER_VIDEO_DELAY = 1.5
 
 # PNG transparente de 1x1 usado como marcador mientras carga una imagen,
 # para reemplazar el ícono giratorio de "cargando" por defecto de Kivy.
@@ -48,6 +52,15 @@ _BLANK_PNG_B64 = (
 )
 
 BRACKET_RE = re.compile(r'\[[^\]]*\]')
+
+COLOR_ERROR = (0.85, 0.30, 0.30, 1)
+COLOR_SUCCESS = (0.35, 0.75, 0.45, 1)
+COLOR_NEUTRAL = (0.75, 0.75, 0.75, 1)
+
+
+class QuotaExceededError(Exception):
+    pass
+
 
 KV = '''
 <StyledButton@Button>:
@@ -64,6 +77,42 @@ KV = '''
             size: self.size
             radius: [dp(12)]
 
+<SecondaryButton@Button>:
+    background_normal: ''
+    background_down: ''
+    background_color: 0, 0, 0, 0
+    color: 0.85, 0.85, 0.85, 1
+    font_size: '12sp'
+    canvas.before:
+        Color:
+            rgba: (0.12, 0.12, 0.14, 1) if self.state == 'normal' else (0.22, 0.22, 0.25, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(10)]
+
+<TabButton@ToggleButton>:
+    background_normal: ''
+    background_down: ''
+    background_color: 0, 0, 0, 0
+    color: 1, 1, 1, 1
+    bold: True
+    canvas.before:
+        Color:
+            rgba: (0.20, 0.62, 0.88, 1) if self.state == 'down' else (0.15, 0.15, 0.17, 1)
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+<StatusDot@Widget>:
+    dot_color: 0.5, 0.5, 0.5, 1
+    canvas:
+        Color:
+            rgba: self.dot_color
+        Ellipse:
+            pos: self.pos
+            size: self.size
+
 <LoadingBar>:
     canvas:
         Color:
@@ -75,8 +124,8 @@ KV = '''
         Color:
             rgba: 0.20, 0.62, 0.88, 1
         RoundedRectangle:
-            pos: self.x + self.fill_x * max(self.width - dp(70), 0), self.y
-            size: dp(70), self.height
+            pos: self.x, self.y
+            size: self.width * self.fill_x, self.height
             radius: [dp(5)]
 
 <ResultCard>:
@@ -153,43 +202,193 @@ KV = '''
                 pos: self.pos
                 size: self.size
 
-<RootWidget>:
-    orientation: 'vertical'
-    padding: dp(14)
+<ChannelRow>:
+    orientation: 'horizontal'
+    size_hint_y: None
+    height: dp(72)
     spacing: dp(8)
+    padding: [0, dp(4)]
 
-    TextInput:
-        id: url_input
-        hint_text: 'Pega uno o varios enlaces de YouTube (uno por línea, numerados o no)'
-        multiline: True
-        size_hint_y: None
-        height: dp(90)
-        font_size: '15sp'
+    AsyncImage:
+        source: root.thumbnail_url
+        size_hint_x: None
+        width: dp(96)
+        allow_stretch: True
+        keep_ratio: True
+
+    BoxLayout:
+        orientation: 'vertical'
+        Label:
+            text: root.row_title
+            text_size: self.width, None
+            halign: 'left'
+            valign: 'top'
+            font_size: '13sp'
+            color: 1, 1, 1, 1
+            shorten: True
+            shorten_from: 'right'
+        BoxLayout:
+            size_hint_y: None
+            height: dp(20)
+            spacing: dp(6)
+            StatusDot:
+                size_hint_x: None
+                width: dp(14)
+                dot_color: root.status_color
+            Label:
+                text: root.status_text
+                text_size: self.width, None
+                halign: 'left'
+                font_size: '11sp'
+                color: root.status_color
 
     StyledButton:
-        text: '📋 Pegar desde el portapapeles'
-        size_hint_y: None
-        height: dp(38)
-        font_size: '13sp'
-        on_release: root.paste_link()
+        text: 'Guardar'
+        size_hint_x: None
+        width: dp(78)
+        font_size: '11sp'
+        disabled: not root.transcript_text
+        on_release: root.save_pair()
+
+<RootWidget>:
+    orientation: 'vertical'
+    padding: [dp(14), dp(10)]
+    spacing: dp(6)
 
     BoxLayout:
         size_hint_y: None
         height: dp(44)
-        spacing: dp(6)
-        ToggleButton:
-            id: btn_original
-            text: 'Idioma original'
-            group: 'lang'
+        TabButton:
+            id: tab_links
+            text: 'Transcribir por enlace(s)'
+            group: 'main_tab'
             state: 'down'
-        ToggleButton:
-            id: btn_spanish
-            text: 'Español'
-            group: 'lang'
-        ToggleButton:
-            id: btn_both
-            text: 'Ambos'
-            group: 'lang'
+            font_size: '13sp'
+            on_state: if self.state == 'down': root.active_tab = 'links'
+        TabButton:
+            id: tab_channel
+            text: 'Transcribir canal completo'
+            group: 'main_tab'
+            font_size: '13sp'
+            on_state: if self.state == 'down': root.active_tab = 'channel'
+
+    BoxLayout:
+        id: links_panel
+        orientation: 'vertical'
+        spacing: dp(6)
+        size_hint_y: None
+        height: self.minimum_height if root.active_tab == 'links' else 0
+        opacity: 1 if root.active_tab == 'links' else 0
+        disabled: root.active_tab != 'links'
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(90)
+            spacing: dp(6)
+            TextInput:
+                id: url_input
+                hint_text: 'Pega uno o varios enlaces de YouTube (uno por línea, numerados o no)'
+                multiline: True
+                font_size: '15sp'
+            SecondaryButton:
+                text: 'Pegar'
+                size_hint_x: None
+                width: dp(58)
+                on_release: root.paste_link()
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(8)
+            Label:
+                text: 'Idioma:'
+                size_hint_x: None
+                width: dp(60)
+                color: 0.85, 0.85, 0.85, 1
+            Spinner:
+                id: lang_spinner_links
+                text: 'Original'
+                values: ['Original', 'Español']
+                background_normal: ''
+                background_color: 0.20, 0.20, 0.22, 1
+                color: 1, 1, 1, 1
+
+        StyledButton:
+            id: fetch_button
+            text: 'Obtener transcripción(es)'
+            size_hint_y: None
+            height: dp(52)
+            font_size: '16sp'
+            on_release: root.fetch_transcript()
+
+    BoxLayout:
+        id: channel_panel
+        orientation: 'vertical'
+        spacing: dp(6)
+        size_hint_y: None
+        height: self.minimum_height if root.active_tab == 'channel' else 0
+        opacity: 1 if root.active_tab == 'channel' else 0
+        disabled: root.active_tab != 'channel'
+
+        TextInput:
+            id: api_key_input
+            hint_text: 'Clave de API de YouTube (se guarda en tu teléfono)'
+            multiline: False
+            password: True
+            size_hint_y: None
+            height: dp(42)
+            font_size: '13sp'
+
+        TextInput:
+            id: channel_input
+            hint_text: 'Enlace del canal o @usuario (ej. @psychacks)'
+            multiline: False
+            size_hint_y: None
+            height: dp(42)
+            font_size: '13sp'
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(8)
+            Label:
+                text: 'Idioma:'
+                size_hint_x: None
+                width: dp(60)
+                color: 0.85, 0.85, 0.85, 1
+            Spinner:
+                id: lang_spinner_channel
+                text: 'Original'
+                values: ['Original', 'Español']
+                background_normal: ''
+                background_color: 0.20, 0.20, 0.22, 1
+                color: 1, 1, 1, 1
+
+        StyledButton:
+            text: 'Analizar canal'
+            size_hint_y: None
+            height: dp(48)
+            font_size: '14sp'
+            on_release: root.analyze_channel()
+
+        Label:
+            id: channel_info_label
+            text: ''
+            size_hint_y: None
+            height: dp(22) if self.text else 0
+            font_size: '12sp'
+            color: 0.8, 0.8, 0.8, 1
+            text_size: self.width, None
+
+        StyledButton:
+            id: channel_action_button
+            text: ''
+            size_hint_y: None
+            height: dp(48) if self.text else 0
+            opacity: 1 if self.text else 0
+            font_size: '14sp'
+            disabled: not self.text
+            on_release: root.start_channel_transcription()
 
     BoxLayout:
         size_hint_y: None
@@ -198,67 +397,6 @@ KV = '''
             id: btn_brackets
             text: 'Incluir texto entre [corchetes]'
             font_size: '13sp'
-
-    Label:
-        text: '— o transcribe los videos más recientes de un canal —'
-        size_hint_y: None
-        height: dp(24)
-        color: 0.6, 0.6, 0.6, 1
-        font_size: '12sp'
-
-    TextInput:
-        id: api_key_input
-        hint_text: 'Clave de API de YouTube (se guarda en tu teléfono)'
-        multiline: False
-        password: True
-        size_hint_y: None
-        height: dp(42)
-        font_size: '13sp'
-
-    TextInput:
-        id: channel_input
-        hint_text: 'Enlace del canal o @usuario (ej. @psychacks)'
-        multiline: False
-        size_hint_y: None
-        height: dp(42)
-        font_size: '13sp'
-
-    BoxLayout:
-        size_hint_y: None
-        height: dp(40)
-        spacing: dp(4)
-        ToggleButton:
-            id: count_5
-            text: '5 videos'
-            group: 'chcount'
-        ToggleButton:
-            id: count_10
-            text: '10 videos'
-            group: 'chcount'
-            state: 'down'
-        ToggleButton:
-            id: count_20
-            text: '20 videos'
-            group: 'chcount'
-        ToggleButton:
-            id: count_30
-            text: '30 videos'
-            group: 'chcount'
-
-    StyledButton:
-        text: 'Obtener videos del canal (excluye Shorts y en vivo)'
-        size_hint_y: None
-        height: dp(48)
-        font_size: '14sp'
-        on_release: root.fetch_channel()
-
-    StyledButton:
-        id: fetch_button
-        text: 'Obtener transcripción(es)'
-        size_hint_y: None
-        height: dp(52)
-        font_size: '16sp'
-        on_release: root.fetch_transcript()
 
     LoadingBar:
         id: loading_bar
@@ -270,24 +408,37 @@ KV = '''
         id: status_label
         text: ''
         size_hint_y: None
-        height: dp(26)
+        height: dp(24) if self.text else 0
         color: 0.85, 0.85, 0.85, 1
-
-    StyledButton:
-        id: export_button
-        text: 'Exportar lote a .txt (uno por video)'
-        size_hint_y: None
-        height: dp(46) if root.ids.results_container.children else 0
-        opacity: 1 if root.ids.results_container.children else 0
-        disabled: not root.ids.results_container.children
-        on_release: root.export_batch()
-
-    StyledButton:
-        text: 'Vaciar caché (forzar volver a obtener)'
-        size_hint_y: None
-        height: dp(38)
+        text_size: self.width, None
         font_size: '13sp'
-        on_release: root.clear_cache()
+
+    SecondaryButton:
+        text: 'Descargar completados (imagen + texto)'
+        size_hint_y: None
+        height: dp(38) if (root.active_tab == 'channel' and root.ids.results_container.children) else 0
+        opacity: 1 if (root.active_tab == 'channel' and root.ids.results_container.children) else 0
+        disabled: not (root.active_tab == 'channel' and root.ids.results_container.children)
+        on_release: root.download_all_channel_pairs()
+
+    BoxLayout:
+        id: pagination_bar
+        size_hint_y: None
+        height: dp(38) if root.channel_page_count > 1 else 0
+        opacity: 1 if root.channel_page_count > 1 else 0
+        spacing: dp(6)
+        SecondaryButton:
+            text: '< Anterior'
+            disabled: root.channel_page <= 1
+            on_release: root.channel_prev_page()
+        Label:
+            text: f'Página {root.channel_page} de {root.channel_page_count}'
+            color: 0.85, 0.85, 0.85, 1
+            font_size: '12sp'
+        SecondaryButton:
+            text: 'Siguiente >'
+            disabled: root.channel_page >= root.channel_page_count
+            on_release: root.channel_next_page()
 
     ScrollView:
         BoxLayout:
@@ -296,13 +447,29 @@ KV = '''
             size_hint_y: None
             height: self.minimum_height
             spacing: dp(4)
+
+    BoxLayout:
+        size_hint_y: None
+        height: dp(40)
+        spacing: dp(6)
+        padding: [0, dp(4), 0, 0]
+        canvas.before:
+            Color:
+                rgba: 0.08, 0.08, 0.09, 1
+            Rectangle:
+                pos: self.pos
+                size: self.size
+        SecondaryButton:
+            id: export_button
+            text: 'Exportar lote a .txt'
+            disabled: not root.ids.results_container.children
+            on_release: root.export_batch()
+        SecondaryButton:
+            text: 'Vaciar caché'
+            on_release: root.clear_cache()
 '''
 
 Builder.load_string(KV)
-
-COLOR_ERROR = (0.85, 0.30, 0.30, 1)
-COLOR_SUCCESS = (0.35, 0.75, 0.45, 1)
-
 
 class LoadingBar(Widget):
     fill_x = NumericProperty(0)
@@ -315,6 +482,13 @@ class LoadingBar(Widget):
             Animation(fill_x=0, duration=0.9, t='in_out_sine')
         self._anim.repeat = True
         self._anim.start(self)
+
+    def set_progress(self, fraction):
+        if self._anim:
+            self._anim.cancel(self)
+            self._anim = None
+        self.opacity = 1
+        self.fill_x = max(0.0, min(1.0, fraction))
 
     def stop(self):
         if self._anim:
@@ -357,22 +531,62 @@ class ResultCard(BoxLayout):
         if not self.transcript_text:
             return
         Clipboard.copy(self.transcript_text)
-        self._set_status('Texto copiado ✓', success=True)
+        self._set_status('Texto copiado', success=True)
         for btn_id in ('copy_button_top', 'copy_button'):
             btn = self.ids.get(btn_id)
             if btn:
                 original = btn.text
-                btn.text = '¡Copiado! ✓'
+                btn.text = 'Copiado'
                 Clock.schedule_once(lambda dt, b=btn, t=original: setattr(b, 'text', t), 1.4)
+
+
+class ChannelRow(BoxLayout):
+    row_title = StringProperty('')
+    thumbnail_url = StringProperty('')
+    transcript_text = StringProperty('')
+    video_title = StringProperty('')
+    video_id = StringProperty('')
+    status_text = StringProperty('')
+    status_color = list(COLOR_NEUTRAL)
+    index = NumericProperty(0)
+
+    def save_pair(self):
+        threading.Thread(target=self._save_pair_thread, daemon=True).start()
+
+    def _save_pair_thread(self):
+        try:
+            img_bytes = None
+            if self.thumbnail_url:
+                try:
+                    img_bytes = requests.get(self.thumbnail_url, timeout=15).content
+                except Exception:
+                    img_bytes = None
+            App.get_running_app().root.save_channel_pair(
+                img_bytes, self.transcript_text.encode('utf-8'),
+                self.index, self.video_title or self.row_title, self.video_id,
+            )
+            self._flash_status_ok('Guardado')
+        except Exception:
+            self._flash_status_ok('Error al guardar')
+
+    @mainthread
+    def _flash_status_ok(self, msg):
+        App.get_running_app().root._set_status(msg)
 
 
 class RootWidget(BoxLayout):
 
+    active_tab = StringProperty('links')
+    channel_page = NumericProperty(1)
+    channel_page_count = NumericProperty(0)
+
     _cache = {}
     _cache_path = None
+    _channel_state = {}
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._channel_state = {}
         self._load_cache()
         settings = self._load_settings()
         if settings.get('api_key'):
@@ -408,7 +622,7 @@ class RootWidget(BoxLayout):
     def clear_cache(self):
         self._cache = {}
         self._save_cache()
-        self._set_status('Caché vaciado ✓ (los próximos videos se volverán a obtener)')
+        self._set_status('Caché vaciado (los próximos videos se volverán a obtener)')
 
     def _cache_key(self, video_id, mode, keep_brackets):
         return f'{video_id}:{mode}:{"b1" if keep_brackets else "b0"}'
@@ -438,6 +652,38 @@ class RootWidget(BoxLayout):
         except Exception:
             pass
 
+    # ---------- estado de reanudación del canal ----------
+
+    def _get_channel_state_path(self):
+        app = App.get_running_app()
+        base = app.user_data_dir if app else '.'
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, 'channel_resume.json')
+
+    def _save_channel_resume_state(self):
+        try:
+            state = self._channel_state
+            data = {
+                'channel_id': state.get('channel_id'),
+                'channel_title': state.get('channel_title'),
+                'video_ids': state.get('video_ids'),
+                'processed_index': state.get('processed_index', 0),
+            }
+            with open(self._get_channel_state_path(), 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    def _load_channel_resume_state(self):
+        try:
+            path = self._get_channel_state_path()
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
+
     # ---------- utilidades ----------
 
     def paste_link(self):
@@ -450,8 +696,6 @@ class RootWidget(BoxLayout):
         self.ids.url_input.text = current + pasted.strip()
 
     def extract_video_ids(self, text):
-        """Extrae los IDs de video de una o varias líneas, con o sin
-        numeración ('1.- link', '2) link', o solo el link)."""
         patterns = [
             r'(?:youtube\.com\/watch\?v=)([0-9A-Za-z_-]{11})',
             r'youtu\.be\/([0-9A-Za-z_-]{11})',
@@ -487,8 +731,6 @@ class RootWidget(BoxLayout):
         return text
 
     def _resolve_thumbnail_url(self, video_id):
-        """Prueba varias resoluciones de miniatura, ya que 'maxresdefault'
-        no existe para todos los videos (causaba error 404)."""
         candidates = [
             f'https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg',
             f'https://i.ytimg.com/vi/{video_id}/sddefault.jpg',
@@ -519,22 +761,25 @@ class RootWidget(BoxLayout):
 
     @mainthread
     def _start_progress(self):
-        self.ids.fetch_button.disabled = True
         self.ids.loading_bar.start()
 
     @mainthread
     def _stop_progress(self):
-        self.ids.fetch_button.disabled = False
         self.ids.loading_bar.stop()
+
+    @mainthread
+    def _set_progress_fraction(self, fraction):
+        self.ids.loading_bar.set_progress(fraction)
 
     @mainthread
     def _set_status(self, text):
         self.ids.status_label.text = text
 
-    # ---------- lógica principal ----------
+    # ---------- transcribir por enlace(s) ----------
 
     def fetch_transcript(self):
         text = self.ids.url_input.text.strip()
+        self.channel_page_count = 0
         self.ids.results_container.clear_widgets()
         video_ids = self.extract_video_ids(text)
 
@@ -542,15 +787,10 @@ class RootWidget(BoxLayout):
             self._set_status('No se encontró ningún enlace válido')
             return
 
-        if self.ids.btn_spanish.state == 'down':
-            mode = 'es'
-        elif self.ids.btn_both.state == 'down':
-            mode = 'both'
-        else:
-            mode = 'original'
-
+        mode = 'es' if self.ids.lang_spinner_links.text == 'Español' else 'original'
         keep_brackets = self.ids.btn_brackets.state == 'down'
 
+        self.ids.fetch_button.disabled = True
         self._start_progress()
         threading.Thread(
             target=self._process_batch, args=(video_ids, mode, keep_brackets), daemon=True
@@ -563,185 +803,15 @@ class RootWidget(BoxLayout):
                 self._set_status(f'Procesando video {i} de {total}...')
                 self._process_one(video_id, mode, keep_brackets)
                 if i < total:
-                    time.sleep(1.5)  # ser gentil con YouTube entre peticiones
+                    time.sleep(PER_VIDEO_DELAY)
         finally:
             self._stop_progress()
-            self._set_status(f'Listo ✓ ({total} video{"s" if total != 1 else ""})')
+            self._set_fetch_button_enabled()
+            self._set_status(f'Listo ({total} video{"s" if total != 1 else ""})')
 
-    # ---------- transcribir un canal completo ----------
-
-    def fetch_channel(self):
-        api_key = self.ids.api_key_input.text.strip()
-        channel_input = self.ids.channel_input.text.strip()
-        if not api_key:
-            self._set_status('Falta la clave de API de YouTube (ver instrucciones)')
-            return
-        if not channel_input:
-            self._set_status('Falta el enlace o @usuario del canal')
-            return
-        self._save_settings(api_key)
-
-        count = 10
-        for n in (5, 10, 20, 30):
-            btn = self.ids.get(f'count_{n}')
-            if btn and btn.state == 'down':
-                count = n
-                break
-
-        if self.ids.btn_spanish.state == 'down':
-            mode = 'es'
-        elif self.ids.btn_both.state == 'down':
-            mode = 'both'
-        else:
-            mode = 'original'
-        keep_brackets = self.ids.btn_brackets.state == 'down'
-
-        self.ids.results_container.clear_widgets()
-        self._start_progress()
-        threading.Thread(
-            target=self._fetch_channel_thread,
-            args=(channel_input, api_key, count, mode, keep_brackets),
-            daemon=True,
-        ).start()
-
-    def _fetch_channel_thread(self, channel_input, api_key, count, mode, keep_brackets):
-        self._set_status('Buscando videos del canal...')
-        try:
-            video_ids = self._fetch_channel_video_ids(channel_input, api_key, count)
-        except Exception as e:
-            self._stop_progress()
-            self._set_status(f'No se pudo obtener el canal: {e}')
-            return
-        if not video_ids:
-            self._stop_progress()
-            self._set_status('No se encontraron videos (sin Shorts/en vivo) en ese canal')
-            return
-        self._process_batch(video_ids, mode, keep_brackets)
-
-    def _resolve_channel_id(self, channel_input, api_key):
-        """Acepta un enlace de canal (/channel/UC..., @usuario en la URL o
-        solo) y devuelve el ID de canal (UC...) usando la API oficial."""
-        channel_input = channel_input.strip()
-
-        m = re.search(r'channel/(UC[0-9A-Za-z_-]{22})', channel_input)
-        if m:
-            return m.group(1)
-
-        m = re.search(r'@([0-9A-Za-z_.-]+)', channel_input)
-        handle = m.group(1) if m else channel_input.lstrip('@').strip()
-
-        if handle and ' ' not in handle:
-            resp = requests.get(
-                'https://www.googleapis.com/youtube/v3/channels',
-                params={'part': 'id', 'forHandle': handle, 'key': api_key},
-                timeout=15,
-            )
-            items = resp.json().get('items', [])
-            if items:
-                return items[0]['id']
-
-            resp2 = requests.get(
-                'https://www.googleapis.com/youtube/v3/channels',
-                params={'part': 'id', 'forUsername': handle, 'key': api_key},
-                timeout=15,
-            )
-            items2 = resp2.json().get('items', [])
-            if items2:
-                return items2[0]['id']
-
-        resp3 = requests.get(
-            'https://www.googleapis.com/youtube/v3/search',
-            params={
-                'part': 'snippet', 'type': 'channel', 'q': channel_input,
-                'key': api_key, 'maxResults': 1,
-            },
-            timeout=15,
-        )
-        items3 = resp3.json().get('items', [])
-        if items3:
-            return items3[0]['snippet']['channelId']
-
-        raise Exception('No se pudo identificar el canal (revisa el enlace y la clave de API)')
-
-    def _get_uploads_playlist_id(self, channel_id, api_key):
-        resp = requests.get(
-            'https://www.googleapis.com/youtube/v3/channels',
-            params={'part': 'contentDetails', 'id': channel_id, 'key': api_key},
-            timeout=15,
-        )
-        items = resp.json().get('items', [])
-        if not items:
-            raise Exception('Canal no encontrado')
-        return items[0]['contentDetails']['relatedPlaylists']['uploads']
-
-    def _parse_iso8601_duration(self, s):
-        m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', s or '')
-        if not m:
-            return 0
-        h, mi, se = m.groups()
-        return int(h or 0) * 3600 + int(mi or 0) * 60 + int(se or 0)
-
-    def _fetch_channel_video_ids(self, channel_input, api_key, count):
-        """Devuelve hasta 'count' IDs de los videos más recientes del canal,
-        excluyendo Shorts (duración <= 60s) y transmisiones en vivo."""
-        channel_id = self._resolve_channel_id(channel_input, api_key)
-        uploads_id = self._get_uploads_playlist_id(channel_id, api_key)
-
-        result_ids = []
-        page_token = None
-        pages_scanned = 0
-        max_pages = 6  # tope de seguridad: hasta 300 videos recorridos
-
-        while len(result_ids) < count and pages_scanned < max_pages:
-            params = {
-                'part': 'contentDetails', 'playlistId': uploads_id,
-                'maxResults': 50, 'key': api_key,
-            }
-            if page_token:
-                params['pageToken'] = page_token
-
-            resp = requests.get(
-                'https://www.googleapis.com/youtube/v3/playlistItems',
-                params=params, timeout=15,
-            )
-            data = resp.json()
-            items = data.get('items', [])
-            pages_scanned += 1
-            if not items:
-                break
-
-            ids = [it['contentDetails']['videoId'] for it in items]
-
-            details_resp = requests.get(
-                'https://www.googleapis.com/youtube/v3/videos',
-                params={
-                    'part': 'contentDetails,liveStreamingDetails',
-                    'id': ','.join(ids), 'key': api_key,
-                },
-                timeout=15,
-            )
-            details = {d['id']: d for d in details_resp.json().get('items', [])}
-
-            for vid in ids:
-                d = details.get(vid)
-                if not d:
-                    continue
-                if 'liveStreamingDetails' in d:
-                    continue  # excluir transmisiones en vivo (pasadas o actuales)
-                duration = self._parse_iso8601_duration(
-                    d.get('contentDetails', {}).get('duration', '')
-                )
-                if duration <= 60:
-                    continue  # excluir Shorts
-                result_ids.append(vid)
-                if len(result_ids) >= count:
-                    break
-
-            page_token = data.get('nextPageToken')
-            if not page_token:
-                break
-
-        return result_ids
+    @mainthread
+    def _set_fetch_button_enabled(self):
+        self.ids.fetch_button.disabled = False
 
     def _process_one(self, video_id, mode, keep_brackets):
         cache_key = self._cache_key(video_id, mode, keep_brackets)
@@ -765,22 +835,10 @@ class RootWidget(BoxLayout):
             if mode == 'original':
                 body = self._join(self._with_retry(original.fetch), keep_brackets)
                 result = f"{title}\n\n{body}" if title else body
-
-            elif mode == 'es':
+            else:
                 body = self._get_spanish(transcript_list, original, keep_brackets)
                 title_es = self._translate_title(title) if title else title
                 result = f"{title_es}\n\n{body}" if title_es else body
-
-            else:  # ambos
-                text_o = self._join(self._with_retry(original.fetch), keep_brackets)
-                text_e = self._get_spanish(transcript_list, original, keep_brackets)
-                title_es = self._translate_title(title) if title else title
-                header = f"{title}\n\n" if title else ""
-                result = (
-                    f"{header}--- IDIOMA ORIGINAL ({original.language_code}) ---\n\n"
-                    f"{text_o}\n\n--- ESPAÑOL ---\n\n"
-                    f"{(title_es + chr(10) + chr(10)) if title_es else ''}{text_e}"
-                )
 
             self._cache[cache_key] = {
                 'title': title, 'thumbnail': thumbnail_url, 'text': result,
@@ -820,9 +878,6 @@ class RootWidget(BoxLayout):
         raise last_exc
 
     def _get_spanish(self, transcript_list, original, keep_brackets):
-        """Subtítulos ya en español si existen; si no, traduce. Primero
-        intenta la traducción propia de YouTube y, si esta es bloqueada,
-        usa Google Translate como alternativa."""
         try:
             es_transcript = transcript_list.find_transcript(['es', 'es-ES', 'es-419'])
             return self._join(self._with_retry(es_transcript.fetch), keep_brackets)
@@ -837,8 +892,6 @@ class RootWidget(BoxLayout):
             return self._translate_offline(original_text)
 
     def _translate_title(self, title):
-        """Traduce el título para que quede coherente con un texto ya
-        traducido al español (antes se dejaba sin traducir por error)."""
         if not title:
             return title
         try:
@@ -848,8 +901,6 @@ class RootWidget(BoxLayout):
             return title
 
     def _translate_offline(self, text):
-        """Alternativa de traducción cuando YouTube bloquea su propio
-        endpoint: usa Google Translate a través de deep-translator."""
         from deep_translator import GoogleTranslator
         translator = GoogleTranslator(source='auto', target='es')
         chunks = self._chunk_text(text, 4500)
@@ -887,7 +938,428 @@ class RootWidget(BoxLayout):
         card.card_status = error
         self.ids.results_container.add_widget(card)
 
-    # ---------- exportar lote ----------
+    # ---------- analizar canal ----------
+
+    def analyze_channel(self):
+        api_key = self.ids.api_key_input.text.strip()
+        channel_input = self.ids.channel_input.text.strip()
+        if not api_key:
+            self._set_status('Falta la clave de API de YouTube')
+            return
+        if not channel_input:
+            self._set_status('Falta el enlace o @usuario del canal')
+            return
+        self._save_settings(api_key)
+        self._set_status('Analizando canal (puede tardar según su tamaño)...')
+        self._set_channel_info('')
+        self._set_channel_action('')
+        self._start_progress()
+        threading.Thread(
+            target=self._analyze_channel_thread, args=(channel_input, api_key), daemon=True
+        ).start()
+
+    def _analyze_channel_thread(self, channel_input, api_key):
+        try:
+            channel_id = self._resolve_channel_id(channel_input, api_key)
+            channel_title = self._get_channel_title(channel_id, api_key)
+            uploads_id = self._get_uploads_playlist_id(channel_id, api_key)
+            video_ids = self._fetch_all_channel_video_ids(uploads_id, api_key)
+        except QuotaExceededError:
+            self._stop_progress()
+            self._set_status(
+                'Se agotó la cuota diaria de la API de YouTube. El progreso de canales que '
+                'ya se estaban transcribiendo quedó guardado; se reanuda automáticamente '
+                'cuando vuelvas a analizar el mismo canal.'
+            )
+            return
+        except Exception as e:
+            self._stop_progress()
+            self._set_status(f'No se pudo analizar el canal: {e}')
+            return
+
+        self._stop_progress()
+        if not video_ids:
+            self._set_status('No se encontraron videos (sin Shorts/en vivo) en ese canal')
+            return
+
+        saved = self._load_channel_resume_state()
+        processed_index = 0
+        if saved and saved.get('channel_id') == channel_id and saved.get('video_ids') == video_ids:
+            processed_index = saved.get('processed_index', 0)
+
+        self._channel_state = {
+            'channel_id': channel_id,
+            'channel_title': channel_title,
+            'video_ids': video_ids,
+            'processed_index': processed_index,
+            'results': [None] * len(video_ids),
+        }
+        self._save_channel_resume_state()
+
+        total = len(video_ids)
+        self._set_channel_page(1, max(1, (total + BATCH_SIZE - 1) // BATCH_SIZE))
+        self._render_channel_page(1)
+
+        info = f'{channel_title} - {total} videos (excluye Shorts y en vivo)'
+        if processed_index:
+            info += f' - {processed_index} ya procesados anteriormente'
+        self._set_channel_info(info)
+
+        if processed_index >= total:
+            label = 'Volver a transcribir todos'
+        elif processed_index:
+            label = f'Reanudar ({total - processed_index} restantes)'
+        else:
+            label = f'Transcribir los {total} videos'
+        self._set_channel_action(label)
+
+    @mainthread
+    def _set_channel_info(self, text):
+        self.ids.channel_info_label.text = text
+
+    @mainthread
+    def _set_channel_action(self, text):
+        self.ids.channel_action_button.text = text
+
+    @mainthread
+    def _set_channel_action_disabled(self, disabled):
+        self.ids.channel_action_button.disabled = disabled
+
+    @mainthread
+    def _set_channel_page(self, page, page_count):
+        self.channel_page = page
+        self.channel_page_count = page_count
+
+    def _raise_if_quota_error(self, data):
+        err = data.get('error', {}) if isinstance(data, dict) else {}
+        for e in err.get('errors', []):
+            if e.get('reason') in ('quotaExceeded', 'dailyLimitExceeded'):
+                raise QuotaExceededError()
+
+    def _resolve_channel_id(self, channel_input, api_key):
+        channel_input = channel_input.strip()
+
+        m = re.search(r'channel/(UC[0-9A-Za-z_-]{22})', channel_input)
+        if m:
+            return m.group(1)
+
+        m = re.search(r'@([0-9A-Za-z_.-]+)', channel_input)
+        handle = m.group(1) if m else channel_input.lstrip('@').strip()
+
+        if handle and ' ' not in handle:
+            resp = requests.get(
+                'https://www.googleapis.com/youtube/v3/channels',
+                params={'part': 'id', 'forHandle': handle, 'key': api_key},
+                timeout=15,
+            )
+            data = resp.json()
+            self._raise_if_quota_error(data)
+            items = data.get('items', [])
+            if items:
+                return items[0]['id']
+
+            resp2 = requests.get(
+                'https://www.googleapis.com/youtube/v3/channels',
+                params={'part': 'id', 'forUsername': handle, 'key': api_key},
+                timeout=15,
+            )
+            data2 = resp2.json()
+            self._raise_if_quota_error(data2)
+            items2 = data2.get('items', [])
+            if items2:
+                return items2[0]['id']
+
+        resp3 = requests.get(
+            'https://www.googleapis.com/youtube/v3/search',
+            params={
+                'part': 'snippet', 'type': 'channel', 'q': channel_input,
+                'key': api_key, 'maxResults': 1,
+            },
+            timeout=15,
+        )
+        data3 = resp3.json()
+        self._raise_if_quota_error(data3)
+        items3 = data3.get('items', [])
+        if items3:
+            return items3[0]['snippet']['channelId']
+
+        raise Exception('No se pudo identificar el canal (revisa el enlace y la clave de API)')
+
+    def _get_channel_title(self, channel_id, api_key):
+        resp = requests.get(
+            'https://www.googleapis.com/youtube/v3/channels',
+            params={'part': 'snippet', 'id': channel_id, 'key': api_key},
+            timeout=15,
+        )
+        data = resp.json()
+        self._raise_if_quota_error(data)
+        items = data.get('items', [])
+        return items[0]['snippet']['title'] if items else channel_id
+
+    def _get_uploads_playlist_id(self, channel_id, api_key):
+        resp = requests.get(
+            'https://www.googleapis.com/youtube/v3/channels',
+            params={'part': 'contentDetails', 'id': channel_id, 'key': api_key},
+            timeout=15,
+        )
+        data = resp.json()
+        self._raise_if_quota_error(data)
+        items = data.get('items', [])
+        if not items:
+            raise Exception('Canal no encontrado')
+        return items[0]['contentDetails']['relatedPlaylists']['uploads']
+
+    def _parse_iso8601_duration(self, s):
+        m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', s or '')
+        if not m:
+            return 0
+        h, mi, se = m.groups()
+        return int(h or 0) * 3600 + int(mi or 0) * 60 + int(se or 0)
+
+    def _fetch_all_channel_video_ids(self, uploads_id, api_key):
+        """Recorre TODA la lista de subidas del canal, excluyendo Shorts
+        (duración <= 60s) y transmisiones en vivo. Tope de seguridad:
+        2000 videos revisados."""
+        result_ids = []
+        page_token = None
+        pages_scanned = 0
+        max_pages = 40
+
+        while pages_scanned < max_pages:
+            params = {
+                'part': 'contentDetails', 'playlistId': uploads_id,
+                'maxResults': 50, 'key': api_key,
+            }
+            if page_token:
+                params['pageToken'] = page_token
+
+            resp = requests.get(
+                'https://www.googleapis.com/youtube/v3/playlistItems',
+                params=params, timeout=15,
+            )
+            data = resp.json()
+            self._raise_if_quota_error(data)
+            items = data.get('items', [])
+            pages_scanned += 1
+            if not items:
+                break
+
+            ids = [it['contentDetails']['videoId'] for it in items]
+
+            details_resp = requests.get(
+                'https://www.googleapis.com/youtube/v3/videos',
+                params={
+                    'part': 'contentDetails,liveStreamingDetails',
+                    'id': ','.join(ids), 'key': api_key,
+                },
+                timeout=15,
+            )
+            details_data = details_resp.json()
+            self._raise_if_quota_error(details_data)
+            details = {d['id']: d for d in details_data.get('items', [])}
+
+            for vid in ids:
+                d = details.get(vid)
+                if not d:
+                    continue
+                if 'liveStreamingDetails' in d:
+                    continue
+                duration = self._parse_iso8601_duration(
+                    d.get('contentDetails', {}).get('duration', '')
+                )
+                if duration <= 60:
+                    continue
+                result_ids.append(vid)
+
+            page_token = data.get('nextPageToken')
+            if not page_token:
+                break
+
+        return result_ids
+
+    # ---------- transcribir el canal en lotes de 30 ----------
+
+    def start_channel_transcription(self):
+        if not self._channel_state.get('video_ids'):
+            return
+        self._set_channel_action_disabled(True)
+        threading.Thread(target=self._channel_transcription_thread, daemon=True).start()
+
+    def _channel_transcription_thread(self):
+        state = self._channel_state
+        video_ids = state['video_ids']
+        total = len(video_ids)
+        if not state.get('results') or len(state['results']) != total:
+            state['results'] = [None] * total
+
+        mode = 'es' if self.ids.lang_spinner_channel.text == 'Español' else 'original'
+        keep_brackets = self.ids.btn_brackets.state == 'down'
+        start_index = state.get('processed_index', 0)
+        total_batches = max(1, (total + BATCH_SIZE - 1) // BATCH_SIZE)
+
+        for batch_start in range(start_index, total, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, total)
+            batch_num = batch_start // BATCH_SIZE + 1
+
+            for i in range(batch_start, batch_end):
+                pct = int((i / total) * 100) if total else 0
+                self._set_status(
+                    f'Lote {batch_num} de {total_batches} - Video {i + 1} de {total} ({pct}%)...'
+                )
+                self._set_progress_fraction(i / total if total else 0)
+                self._process_channel_video(video_ids[i], i, mode, keep_brackets)
+                state['processed_index'] = i + 1
+                self._save_channel_resume_state()
+                if i < batch_end - 1:
+                    time.sleep(PER_VIDEO_DELAY)
+
+            if batch_end < total:
+                for remaining in range(BATCH_PAUSE_SECONDS, 0, -1):
+                    self._set_status(
+                        f'Lote {batch_num} de {total_batches} completado. '
+                        f'Pausa de {remaining}s antes del siguiente lote...'
+                    )
+                    time.sleep(1)
+
+        self._set_progress_fraction(0)
+        self._stop_progress()
+        self._set_channel_action_disabled(False)
+        self._set_channel_action('Volver a transcribir todos')
+        self._set_status(f'Canal completo: {total} videos procesados')
+
+    def _process_channel_video(self, video_id, index, mode, keep_brackets):
+        cache_key = self._cache_key(video_id, mode, keep_brackets)
+        cached = self._cache.get(cache_key)
+
+        if cached:
+            title, thumbnail_url, text, error = (
+                cached['title'], cached['thumbnail'], cached['text'], ''
+            )
+        else:
+            title, thumbnail_url = self._fetch_video_info(video_id)
+            text, error = '', ''
+            try:
+                ytt_api = YouTubeTranscriptApi()
+                transcript_list = self._with_retry(ytt_api.list, video_id)
+                available_codes = [t.language_code for t in transcript_list]
+                if not available_codes:
+                    raise NoTranscriptFound(video_id, [], transcript_list)
+                original = transcript_list.find_transcript(available_codes)
+
+                if mode == 'original':
+                    body = self._join(self._with_retry(original.fetch), keep_brackets)
+                    text = f"{title}\n\n{body}" if title else body
+                else:
+                    body = self._get_spanish(transcript_list, original, keep_brackets)
+                    title_es = self._translate_title(title) if title else title
+                    text = f"{title_es}\n\n{body}" if title_es else body
+
+                self._cache[cache_key] = {
+                    'title': title, 'thumbnail': thumbnail_url, 'text': text,
+                }
+                self._save_cache()
+            except TranscriptsDisabled:
+                error = 'Subtítulos deshabilitados'
+            except NoTranscriptFound:
+                error = 'Sin transcripción disponible'
+            except VideoUnavailable:
+                error = 'Video no disponible o privado'
+            except RequestBlocked:
+                error = 'YouTube bloqueó la solicitud temporalmente'
+            except CouldNotRetrieveTranscript as e:
+                error = f'Error: {e}'
+            except Exception as e:
+                error = f'Error: {e}'
+
+        entry = {
+            'index': index + 1, 'video_id': video_id, 'title': title,
+            'thumbnail': thumbnail_url, 'text': text, 'error': error,
+        }
+        self._channel_state['results'][index] = entry
+        self._maybe_refresh_page_for_index(index)
+        return entry
+
+    @mainthread
+    def _maybe_refresh_page_for_index(self, index):
+        results = self._channel_state.get('results', [])
+        total = len(results)
+        page_count = max(1, (total + BATCH_SIZE - 1) // BATCH_SIZE)
+        self.channel_page_count = page_count
+        page = index // BATCH_SIZE + 1
+        if page == self.channel_page:
+            self._render_channel_page(self.channel_page)
+
+    def _render_channel_page(self, page):
+        results = self._channel_state.get('results', [])
+        total = len(results)
+        start = (page - 1) * BATCH_SIZE
+        end = min(start + BATCH_SIZE, total)
+        self.ids.results_container.clear_widgets()
+        for i in range(start, end):
+            entry = results[i]
+            row = Factory.ChannelRow()
+            if entry:
+                row.index = entry['index']
+                row.row_title = f"{entry['index']:03d} - {entry['title'] or '(sin título)'}"
+                row.thumbnail_url = entry['thumbnail']
+                row.transcript_text = entry['text']
+                row.video_id = entry['video_id']
+                row.video_title = entry['title']
+                if entry['error']:
+                    row.status_text = entry['error']
+                    row.status_color = list(COLOR_ERROR)
+                elif entry['text']:
+                    row.status_text = 'Transcrito con éxito'
+                    row.status_color = list(COLOR_SUCCESS)
+                else:
+                    row.status_text = 'Procesando...'
+                    row.status_color = list(COLOR_NEUTRAL)
+            else:
+                row.index = i + 1
+                row.row_title = f'{i + 1:03d} - (en cola)'
+                row.status_text = 'En cola'
+                row.status_color = list(COLOR_NEUTRAL)
+            self.ids.results_container.add_widget(row)
+
+    def channel_next_page(self):
+        if self.channel_page < self.channel_page_count:
+            self.channel_page += 1
+            self._render_channel_page(self.channel_page)
+
+    def channel_prev_page(self):
+        if self.channel_page > 1:
+            self.channel_page -= 1
+            self._render_channel_page(self.channel_page)
+
+    def download_all_channel_pairs(self):
+        threading.Thread(target=self._download_all_channel_pairs_thread, daemon=True).start()
+
+    def _download_all_channel_pairs_thread(self):
+        results = self._channel_state.get('results', [])
+        count, errors = 0, 0
+        for entry in results:
+            if not entry or not entry.get('text'):
+                continue
+            try:
+                img_bytes = None
+                if entry.get('thumbnail'):
+                    try:
+                        img_bytes = requests.get(entry['thumbnail'], timeout=15).content
+                    except Exception:
+                        img_bytes = None
+                self.save_channel_pair(
+                    img_bytes, entry['text'].encode('utf-8'),
+                    entry['index'], entry['title'], entry['video_id'],
+                )
+                count += 1
+            except Exception:
+                errors += 1
+        msg = f'{count} video(s) descargados (imagen+texto)'
+        if errors:
+            msg += f' ({errors} fallaron)'
+        self._set_status(msg)
+
+    # ---------- exportar lote (barra inferior) ----------
 
     def export_batch(self):
         cards = list(self.ids.results_container.children)
@@ -896,21 +1368,29 @@ class RootWidget(BoxLayout):
         threading.Thread(target=self._export_thread, args=(cards,), daemon=True).start()
 
     def _export_thread(self, cards):
+        is_channel = self.active_tab == 'channel' and bool(self._channel_state.get('channel_id'))
         count, errors = 0, 0
-        # los widgets se agregan al inicio de 'children', así que se invierte
-        # para exportar en el mismo orden en que se procesaron los videos.
         for card in reversed(cards):
-            if not getattr(card, 'transcript_text', ''):
+            text = getattr(card, 'transcript_text', '')
+            if not text:
                 continue
-            safe_name = re.sub(r'[\\/*?:"<>|]', '_', card.video_title or card.video_id or 'transcripcion')
-            safe_name = safe_name.strip()[:80] or (card.video_id or 'transcripcion')
-            filename = f'{safe_name}.txt'
             try:
-                self.save_text_public(card.transcript_text.encode('utf-8'), filename)
+                if is_channel:
+                    idx = getattr(card, 'index', 0) or 0
+                    title = getattr(card, 'video_title', '') or getattr(card, 'row_title', '')
+                    vid = getattr(card, 'video_id', '')
+                    self.save_channel_pair(None, text.encode('utf-8'), idx, title, vid)
+                else:
+                    safe_name = re.sub(
+                        r'[\\/*?:"<>|]', '_',
+                        getattr(card, 'video_title', '') or getattr(card, 'video_id', '') or 'transcripcion',
+                    )
+                    safe_name = safe_name.strip()[:80] or 'transcripcion'
+                    self.save_text_public(text.encode('utf-8'), f'{safe_name}.txt')
                 count += 1
             except Exception:
                 errors += 1
-        msg = f'{count} archivo(s) exportado(s) a Descargas'
+        msg = f'{count} archivo(s) exportado(s)'
         if errors:
             msg += f' ({errors} fallaron)'
         self._set_status(msg)
@@ -935,7 +1415,7 @@ class RootWidget(BoxLayout):
         return path
 
     def save_text_public(self, data, filename):
-        """Guarda un archivo de texto en la carpeta pública de Descargas,
+        """Guarda un archivo de texto en Descargas/TranscripcionesYoutube/Videos,
         con respaldo a la carpeta privada de la app si algo falla."""
         if platform == 'android':
             try:
@@ -946,10 +1426,55 @@ class RootWidget(BoxLayout):
                 return self._save_to_app_storage(data, filename)
             except Exception as e:
                 raise e
-        path = os.path.join(os.getcwd(), filename)
+        path = os.path.join(os.getcwd(), 'Videos', filename)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'wb') as f:
             f.write(data)
         return path
+
+    def save_channel_pair(self, image_bytes, text_bytes, index, title, video_id):
+        """Guarda la miniatura (.jpg) y la transcripción (.txt) de un video
+        de canal en: Descargas/TranscripcionesYoutube/Canales/<channel_id>/
+        <Idioma Original|Idioma Español>/NNN - Título.(jpg|txt)"""
+        state = self._channel_state
+        channel_id = state.get('channel_id', 'canal')
+        lang_folder = 'Idioma Español' if self.ids.lang_spinner_channel.text == 'Español' else 'Idioma Original'
+        safe_title = re.sub(r'[\\/*?:"<>|]', '_', title or video_id or 'video').strip()[:80]
+        base_name = f'{index:03d} - {safe_title}'
+
+        if platform == 'android':
+            try:
+                self._save_channel_pair_media_store(
+                    image_bytes, text_bytes, channel_id, lang_folder, base_name
+                )
+                return f'Canales/{channel_id}/{lang_folder}'
+            except Exception:
+                pass
+            base = self._app_storage_dir()
+            folder = os.path.join(base, 'Canales', channel_id, lang_folder)
+            os.makedirs(folder, exist_ok=True)
+            if image_bytes:
+                with open(os.path.join(folder, base_name + '.jpg'), 'wb') as f:
+                    f.write(image_bytes)
+            with open(os.path.join(folder, base_name + '.txt'), 'wb') as f:
+                f.write(text_bytes)
+            return folder
+
+        folder = os.path.join(os.getcwd(), 'Canales', channel_id, lang_folder)
+        os.makedirs(folder, exist_ok=True)
+        if image_bytes:
+            with open(os.path.join(folder, base_name + '.jpg'), 'wb') as f:
+                f.write(image_bytes)
+        with open(os.path.join(folder, base_name + '.txt'), 'wb') as f:
+            f.write(text_bytes)
+        return folder
+
+    def _app_storage_dir(self):
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        context = PythonActivity.mActivity
+        ext_dir = context.getExternalFilesDir(None)
+        return ext_dir.getAbsolutePath() if ext_dir is not None else os.getcwd()
 
     def _request_legacy_storage_permission(self, VERSION_SDK_INT):
         try:
@@ -1005,7 +1530,7 @@ class RootWidget(BoxLayout):
             values = ContentValues()
             values.put(MediaColumns.DISPLAY_NAME, filename)
             values.put(MediaColumns.MIME_TYPE, 'text/plain')
-            values.put(MediaColumns.RELATIVE_PATH, 'Download/TranscripcionesYoutube')
+            values.put(MediaColumns.RELATIVE_PATH, 'Download/TranscripcionesYoutube/Videos')
             resolver = context.getContentResolver()
             uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
             if uri is None:
@@ -1014,18 +1539,73 @@ class RootWidget(BoxLayout):
             out_stream.write(bytearray(data))
             out_stream.flush()
             out_stream.close()
-            return 'Descargas/TranscripcionesYoutube'
+            return 'Descargas/TranscripcionesYoutube/Videos'
         else:
             Environment = autoclass('android.os.Environment')
             downloads_dir = Environment.getExternalStoragePublicDirectory(
                 Environment.DIRECTORY_DOWNLOADS
             )
-            base = downloads_dir.getAbsolutePath()
+            base = os.path.join(downloads_dir.getAbsolutePath(), 'TranscripcionesYoutube', 'Videos')
             os.makedirs(base, exist_ok=True)
             path = os.path.join(base, filename)
             with open(path, 'wb') as f:
                 f.write(data)
             return path
+
+    def _save_channel_pair_media_store(self, image_bytes, text_bytes, channel_id, lang_folder, base_name):
+        from jnius import autoclass
+
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        context = PythonActivity.mActivity
+        VERSION = autoclass('android.os.Build$VERSION')
+        self._request_legacy_storage_permission(VERSION.SDK_INT)
+
+        relative_path = f'Download/TranscripcionesYoutube/Canales/{channel_id}/{lang_folder}'
+
+        if VERSION.SDK_INT >= 29:
+            ContentValues = autoclass('android.content.ContentValues')
+            MediaColumns = autoclass('android.provider.MediaStore$MediaColumns')
+            Downloads = autoclass('android.provider.MediaStore$Downloads')
+            resolver = context.getContentResolver()
+
+            if image_bytes:
+                values_img = ContentValues()
+                values_img.put(MediaColumns.DISPLAY_NAME, base_name + '.jpg')
+                values_img.put(MediaColumns.MIME_TYPE, 'image/jpeg')
+                values_img.put(MediaColumns.RELATIVE_PATH, relative_path)
+                uri_img = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values_img)
+                if uri_img is not None:
+                    out = resolver.openOutputStream(uri_img)
+                    out.write(bytearray(image_bytes))
+                    out.flush()
+                    out.close()
+
+            values_txt = ContentValues()
+            values_txt.put(MediaColumns.DISPLAY_NAME, base_name + '.txt')
+            values_txt.put(MediaColumns.MIME_TYPE, 'text/plain')
+            values_txt.put(MediaColumns.RELATIVE_PATH, relative_path)
+            uri_txt = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values_txt)
+            if uri_txt is None:
+                raise Exception('No se pudo crear el archivo de texto')
+            out2 = resolver.openOutputStream(uri_txt)
+            out2.write(bytearray(text_bytes))
+            out2.flush()
+            out2.close()
+        else:
+            Environment = autoclass('android.os.Environment')
+            downloads_dir = Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS
+            )
+            folder = os.path.join(
+                downloads_dir.getAbsolutePath(), 'TranscripcionesYoutube',
+                'Canales', channel_id, lang_folder,
+            )
+            os.makedirs(folder, exist_ok=True)
+            if image_bytes:
+                with open(os.path.join(folder, base_name + '.jpg'), 'wb') as f:
+                    f.write(image_bytes)
+            with open(os.path.join(folder, base_name + '.txt'), 'wb') as f:
+                f.write(text_bytes)
 
     def _save_to_app_storage(self, data, filename):
         from jnius import autoclass
