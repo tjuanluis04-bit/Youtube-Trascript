@@ -23,7 +23,8 @@ from kivy.core.image import Image as CoreImage
 from kivy.loader import Loader
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.widget import Widget
-from kivy.properties import StringProperty, NumericProperty, BooleanProperty
+from kivy.uix.screenmanager import ScreenManager, Screen, NoTransition
+from kivy.properties import StringProperty, NumericProperty
 from kivy.animation import Animation
 from kivy.metrics import dp
 from kivy.utils import platform
@@ -91,18 +92,25 @@ KV = '''
             size: self.size
             radius: [dp(10)]
 
-<TabButton@ToggleButton>:
+<CheckToggle@ToggleButton>:
     background_normal: ''
     background_down: ''
     background_color: 0, 0, 0, 0
     color: 1, 1, 1, 1
-    bold: True
+    font_size: '13sp'
+    padding: [dp(40), 0]
     canvas.before:
         Color:
-            rgba: (0.20, 0.62, 0.88, 1) if self.state == 'down' else (0.15, 0.15, 0.17, 1)
-        Rectangle:
+            rgba: (0.14, 0.14, 0.16, 1) if self.state == 'normal' else (0.16, 0.42, 0.30, 1)
+        RoundedRectangle:
             pos: self.pos
             size: self.size
+            radius: [dp(10)]
+        Color:
+            rgba: (0.35, 0.35, 0.38, 1) if self.state == 'normal' else (0.30, 0.85, 0.45, 1)
+        Ellipse:
+            pos: self.x + dp(12), self.center_y - dp(7)
+            size: dp(14), dp(14)
 
 <StatusDot@Widget>:
     dot_color: 0.5, 0.5, 0.5, 1
@@ -249,7 +257,11 @@ KV = '''
         font_size: '11sp'
         disabled: not root.transcript_text
         on_release: root.save_pair()
+'''
 
+Builder.load_string(KV)
+
+ROOT_KV = '''
 <RootWidget>:
     orientation: 'vertical'
     padding: [dp(14), dp(10)]
@@ -258,145 +270,45 @@ KV = '''
     BoxLayout:
         size_hint_y: None
         height: dp(44)
-        TabButton:
-            id: tab_links
+        Button:
+            id: tab_links_btn
             text: 'Transcribir por enlace(s)'
-            group: 'main_tab'
-            state: 'down'
             font_size: '13sp'
-            on_state: if self.state == 'down': root.active_tab = 'links'
-        TabButton:
-            id: tab_channel
+            bold: True
+            background_normal: ''
+            background_down: ''
+            background_color: 0, 0, 0, 0
+            color: 1, 1, 1, 1
+            canvas.before:
+                Color:
+                    rgba: (0.20, 0.62, 0.88, 1) if screen_manager.current == 'links' else (0.15, 0.15, 0.17, 1)
+                Rectangle:
+                    pos: self.pos
+                    size: self.size
+            on_release: screen_manager.current = 'links'
+        Button:
+            id: tab_channel_btn
             text: 'Transcribir canal completo'
-            group: 'main_tab'
             font_size: '13sp'
-            on_state: if self.state == 'down': root.active_tab = 'channel'
-
-    BoxLayout:
-        id: links_panel
-        orientation: 'vertical'
-        spacing: dp(6)
-        size_hint_y: None
-        height: self.minimum_height if root.active_tab == 'links' else 0
-        opacity: 1 if root.active_tab == 'links' else 0
-        disabled: root.active_tab != 'links'
-
-        BoxLayout:
-            size_hint_y: None
-            height: dp(90)
-            spacing: dp(6)
-            TextInput:
-                id: url_input
-                hint_text: 'Pega uno o varios enlaces de YouTube (uno por línea, numerados o no)'
-                multiline: True
-                font_size: '15sp'
-            SecondaryButton:
-                text: 'Pegar'
-                size_hint_x: None
-                width: dp(58)
-                on_release: root.paste_link()
-
-        BoxLayout:
-            size_hint_y: None
-            height: dp(44)
-            spacing: dp(8)
-            Label:
-                text: 'Idioma:'
-                size_hint_x: None
-                width: dp(60)
-                color: 0.85, 0.85, 0.85, 1
-            Spinner:
-                id: lang_spinner_links
-                text: 'Original'
-                values: ['Original', 'Español']
-                background_normal: ''
-                background_color: 0.20, 0.20, 0.22, 1
-                color: 1, 1, 1, 1
-
-        StyledButton:
-            id: fetch_button
-            text: 'Obtener transcripción(es)'
-            size_hint_y: None
-            height: dp(52)
-            font_size: '16sp'
-            on_release: root.fetch_transcript()
-
-    BoxLayout:
-        id: channel_panel
-        orientation: 'vertical'
-        spacing: dp(6)
-        size_hint_y: None
-        height: self.minimum_height if root.active_tab == 'channel' else 0
-        opacity: 1 if root.active_tab == 'channel' else 0
-        disabled: root.active_tab != 'channel'
-
-        TextInput:
-            id: api_key_input
-            hint_text: 'Clave de API de YouTube (se guarda en tu teléfono)'
-            multiline: False
-            password: True
-            size_hint_y: None
-            height: dp(42)
-            font_size: '13sp'
-
-        TextInput:
-            id: channel_input
-            hint_text: 'Enlace del canal o @usuario (ej. @psychacks)'
-            multiline: False
-            size_hint_y: None
-            height: dp(42)
-            font_size: '13sp'
-
-        BoxLayout:
-            size_hint_y: None
-            height: dp(44)
-            spacing: dp(8)
-            Label:
-                text: 'Idioma:'
-                size_hint_x: None
-                width: dp(60)
-                color: 0.85, 0.85, 0.85, 1
-            Spinner:
-                id: lang_spinner_channel
-                text: 'Original'
-                values: ['Original', 'Español']
-                background_normal: ''
-                background_color: 0.20, 0.20, 0.22, 1
-                color: 1, 1, 1, 1
-
-        StyledButton:
-            text: 'Analizar canal'
-            size_hint_y: None
-            height: dp(48)
-            font_size: '14sp'
-            on_release: root.analyze_channel()
-
-        Label:
-            id: channel_info_label
-            text: ''
-            size_hint_y: None
-            height: dp(22) if self.text else 0
-            font_size: '12sp'
-            color: 0.8, 0.8, 0.8, 1
-            text_size: self.width, None
-
-        StyledButton:
-            id: channel_action_button
-            text: ''
-            size_hint_y: None
-            height: dp(48) if self.text else 0
-            opacity: 1 if self.text else 0
-            font_size: '14sp'
-            disabled: not self.text
-            on_release: root.start_channel_transcription()
+            bold: True
+            background_normal: ''
+            background_down: ''
+            background_color: 0, 0, 0, 0
+            color: 1, 1, 1, 1
+            canvas.before:
+                Color:
+                    rgba: (0.20, 0.62, 0.88, 1) if screen_manager.current == 'channel' else (0.15, 0.15, 0.17, 1)
+                Rectangle:
+                    pos: self.pos
+                    size: self.size
+            on_release: screen_manager.current = 'channel'
 
     BoxLayout:
         size_hint_y: None
-        height: dp(38)
-        ToggleButton:
+        height: dp(40)
+        CheckToggle:
             id: btn_brackets
             text: 'Incluir texto entre [corchetes]'
-            font_size: '13sp'
 
     LoadingBar:
         id: loading_bar
@@ -413,63 +325,226 @@ KV = '''
         text_size: self.width, None
         font_size: '13sp'
 
-    SecondaryButton:
-        text: 'Descargar completados (imagen + texto)'
-        size_hint_y: None
-        height: dp(38) if (root.active_tab == 'channel' and root.ids.results_container.children) else 0
-        opacity: 1 if (root.active_tab == 'channel' and root.ids.results_container.children) else 0
-        disabled: not (root.active_tab == 'channel' and root.ids.results_container.children)
-        on_release: root.download_all_channel_pairs()
+    ScreenManager:
+        id: screen_manager
+        transition: NoTransition()
 
-    BoxLayout:
-        id: pagination_bar
-        size_hint_y: None
-        height: dp(38) if root.channel_page_count > 1 else 0
-        opacity: 1 if root.channel_page_count > 1 else 0
-        spacing: dp(6)
-        SecondaryButton:
-            text: '< Anterior'
-            disabled: root.channel_page <= 1
-            on_release: root.channel_prev_page()
-        Label:
-            text: f'Página {root.channel_page} de {root.channel_page_count}'
-            color: 0.85, 0.85, 0.85, 1
-            font_size: '12sp'
-        SecondaryButton:
-            text: 'Siguiente >'
-            disabled: root.channel_page >= root.channel_page_count
-            on_release: root.channel_next_page()
+        Screen:
+            name: 'links'
+            BoxLayout:
+                orientation: 'vertical'
+                spacing: dp(6)
 
-    ScrollView:
-        BoxLayout:
-            id: results_container
-            orientation: 'vertical'
-            size_hint_y: None
-            height: self.minimum_height
-            spacing: dp(4)
+                BoxLayout:
+                    size_hint_y: None
+                    height: dp(90)
+                    spacing: dp(6)
+                    TextInput:
+                        id: url_input
+                        hint_text: 'Pega uno o varios enlaces de YouTube (uno por línea, numerados o no)'
+                        multiline: True
+                        font_size: '15sp'
+                    SecondaryButton:
+                        text: 'Pegar'
+                        size_hint_x: None
+                        width: dp(58)
+                        on_release: root.paste_link()
 
-    BoxLayout:
-        size_hint_y: None
-        height: dp(40)
-        spacing: dp(6)
-        padding: [0, dp(4), 0, 0]
-        canvas.before:
-            Color:
-                rgba: 0.08, 0.08, 0.09, 1
-            Rectangle:
-                pos: self.pos
-                size: self.size
-        SecondaryButton:
-            id: export_button
-            text: 'Exportar lote a .txt'
-            disabled: not root.ids.results_container.children
-            on_release: root.export_batch()
-        SecondaryButton:
-            text: 'Vaciar caché'
-            on_release: root.clear_cache()
+                BoxLayout:
+                    size_hint_y: None
+                    height: dp(44)
+                    spacing: dp(8)
+                    Label:
+                        text: 'Idioma:'
+                        size_hint_x: None
+                        width: dp(60)
+                        color: 0.85, 0.85, 0.85, 1
+                    Spinner:
+                        id: lang_spinner_links
+                        text: 'Original'
+                        values: ['Original', 'Español']
+                        background_normal: ''
+                        background_color: 0.20, 0.20, 0.22, 1
+                        color: 1, 1, 1, 1
+
+                StyledButton:
+                    id: fetch_button
+                    text: 'Obtener transcripción(es)'
+                    size_hint_y: None
+                    height: dp(52)
+                    font_size: '16sp'
+                    on_release: root.fetch_transcript()
+
+                ScrollView:
+                    BoxLayout:
+                        id: results_container_links
+                        orientation: 'vertical'
+                        size_hint_y: None
+                        height: self.minimum_height
+                        spacing: dp(4)
+
+                BoxLayout:
+                    size_hint_y: None
+                    height: dp(38)
+                    spacing: dp(6)
+                    SecondaryButton:
+                        id: export_button_links
+                        text: 'Exportar lote a .txt'
+                        disabled: not results_container_links.children
+                        on_release: root.export_batch('links')
+                    SecondaryButton:
+                        text: 'Vaciar caché'
+                        on_release: root.clear_cache()
+
+        Screen:
+            name: 'channel'
+            BoxLayout:
+                orientation: 'vertical'
+                spacing: dp(6)
+
+                ScrollView:
+                    do_scroll_x: False
+                    BoxLayout:
+                        orientation: 'vertical'
+                        size_hint_y: None
+                        height: self.minimum_height
+                        spacing: dp(6)
+
+                        TextInput:
+                            id: api_key_input
+                            hint_text: 'Clave de API de YouTube (se guarda en tu teléfono)'
+                            multiline: False
+                            password: True
+                            size_hint_y: None
+                            height: dp(42)
+                            font_size: '13sp'
+
+                        TextInput:
+                            id: channel_input
+                            hint_text: 'Enlace del canal o @usuario (ej. @psychacks)'
+                            multiline: False
+                            size_hint_y: None
+                            height: dp(42)
+                            font_size: '13sp'
+
+                        BoxLayout:
+                            size_hint_y: None
+                            height: dp(44)
+                            spacing: dp(8)
+                            Label:
+                                text: 'Fuente:'
+                                size_hint_x: None
+                                width: dp(60)
+                                color: 0.85, 0.85, 0.85, 1
+                            Spinner:
+                                id: source_spinner
+                                text: 'Videos'
+                                values: ['Videos', 'En vivo', 'Lista de reproducción']
+                                background_normal: ''
+                                background_color: 0.20, 0.20, 0.22, 1
+                                color: 1, 1, 1, 1
+
+                        TextInput:
+                            id: playlist_input
+                            hint_text: 'Enlace o ID de la lista de reproducción'
+                            multiline: False
+                            size_hint_y: None
+                            height: dp(42) if source_spinner.text == 'Lista de reproducción' else 0
+                            opacity: 1 if source_spinner.text == 'Lista de reproducción' else 0
+                            font_size: '13sp'
+
+                        BoxLayout:
+                            size_hint_y: None
+                            height: dp(44)
+                            spacing: dp(8)
+                            Label:
+                                text: 'Idioma:'
+                                size_hint_x: None
+                                width: dp(60)
+                                color: 0.85, 0.85, 0.85, 1
+                            Spinner:
+                                id: lang_spinner_channel
+                                text: 'Original'
+                                values: ['Original', 'Español']
+                                background_normal: ''
+                                background_color: 0.20, 0.20, 0.22, 1
+                                color: 1, 1, 1, 1
+
+                        StyledButton:
+                            text: 'Analizar canal'
+                            size_hint_y: None
+                            height: dp(48)
+                            font_size: '14sp'
+                            on_release: root.analyze_channel()
+
+                        Label:
+                            id: channel_info_label
+                            text: ''
+                            size_hint_y: None
+                            height: dp(22) if self.text else 0
+                            font_size: '12sp'
+                            color: 0.8, 0.8, 0.8, 1
+                            text_size: self.width, None
+
+                        StyledButton:
+                            id: channel_action_button
+                            text: ''
+                            size_hint_y: None
+                            height: dp(48) if self.text else 0
+                            opacity: 1 if self.text else 0
+                            font_size: '14sp'
+                            disabled: not self.text
+                            on_release: root.start_channel_transcription()
+
+                        SecondaryButton:
+                            text: 'Descargar completados (imagen + texto)'
+                            size_hint_y: None
+                            height: dp(38) if results_container_channel.children else 0
+                            opacity: 1 if results_container_channel.children else 0
+                            disabled: not results_container_channel.children
+                            on_release: root.download_all_channel_pairs()
+
+                        BoxLayout:
+                            size_hint_y: None
+                            height: dp(38) if root.channel_page_count > 1 else 0
+                            opacity: 1 if root.channel_page_count > 1 else 0
+                            spacing: dp(6)
+                            SecondaryButton:
+                                text: '< Anterior'
+                                disabled: root.channel_page <= 1
+                                on_release: root.channel_prev_page()
+                            Label:
+                                text: f'Pagina {root.channel_page} de {root.channel_page_count}'
+                                color: 0.85, 0.85, 0.85, 1
+                                font_size: '12sp'
+                            SecondaryButton:
+                                text: 'Siguiente >'
+                                disabled: root.channel_page >= root.channel_page_count
+                                on_release: root.channel_next_page()
+
+                        BoxLayout:
+                            id: results_container_channel
+                            orientation: 'vertical'
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: dp(4)
+
+                BoxLayout:
+                    size_hint_y: None
+                    height: dp(38)
+                    spacing: dp(6)
+                    SecondaryButton:
+                        id: export_button_channel
+                        text: 'Exportar lote a .txt'
+                        disabled: not results_container_channel.children
+                        on_release: root.export_batch('channel')
+                    SecondaryButton:
+                        text: 'Vaciar caché'
+                        on_release: root.clear_cache()
 '''
 
-Builder.load_string(KV)
+Builder.load_string(ROOT_KV)
+
 
 class LoadingBar(Widget):
     fill_x = NumericProperty(0)
@@ -576,7 +651,6 @@ class ChannelRow(BoxLayout):
 
 class RootWidget(BoxLayout):
 
-    active_tab = StringProperty('links')
     channel_page = NumericProperty(1)
     channel_page_count = NumericProperty(0)
 
@@ -668,6 +742,7 @@ class RootWidget(BoxLayout):
                 'channel_title': state.get('channel_title'),
                 'video_ids': state.get('video_ids'),
                 'processed_index': state.get('processed_index', 0),
+                'source': state.get('source', 'videos'),
             }
             with open(self._get_channel_state_path(), 'w', encoding='utf-8') as f:
                 json.dump(data, f)
@@ -779,8 +854,7 @@ class RootWidget(BoxLayout):
 
     def fetch_transcript(self):
         text = self.ids.url_input.text.strip()
-        self.channel_page_count = 0
-        self.ids.results_container.clear_widgets()
+        self.ids.results_container_links.clear_widgets()
         video_ids = self.extract_video_ids(text)
 
         if not video_ids:
@@ -936,50 +1010,70 @@ class RootWidget(BoxLayout):
         if error:
             card.card_status_color = list(COLOR_ERROR)
         card.card_status = error
-        self.ids.results_container.add_widget(card)
+        self.ids.results_container_links.add_widget(card)
 
-    # ---------- analizar canal ----------
+    # ---------- analizar canal / lista de reproducción ----------
 
     def analyze_channel(self):
         api_key = self.ids.api_key_input.text.strip()
         channel_input = self.ids.channel_input.text.strip()
+        source = self.ids.source_spinner.text
+        playlist_raw = self.ids.playlist_input.text.strip()
+
         if not api_key:
             self._set_status('Falta la clave de API de YouTube')
             return
-        if not channel_input:
+        if source == 'Lista de reproducción':
+            if not playlist_raw:
+                self._set_status('Falta el enlace o ID de la lista de reproducción')
+                return
+        elif not channel_input:
             self._set_status('Falta el enlace o @usuario del canal')
             return
+
         self._save_settings(api_key)
-        self._set_status('Analizando canal (puede tardar según su tamaño)...')
+        self._set_status('Analizando (puede tardar según el tamaño)...')
         self._set_channel_info('')
         self._set_channel_action('')
         self._start_progress()
         threading.Thread(
-            target=self._analyze_channel_thread, args=(channel_input, api_key), daemon=True
+            target=self._analyze_channel_thread,
+            args=(channel_input, api_key, source, playlist_raw), daemon=True,
         ).start()
 
-    def _analyze_channel_thread(self, channel_input, api_key):
+    def _analyze_channel_thread(self, channel_input, api_key, source, playlist_raw):
         try:
-            channel_id = self._resolve_channel_id(channel_input, api_key)
-            channel_title = self._get_channel_title(channel_id, api_key)
-            uploads_id = self._get_uploads_playlist_id(channel_id, api_key)
-            video_ids = self._fetch_all_channel_video_ids(uploads_id, api_key)
+            folder_tag = None
+            if source == 'Lista de reproducción':
+                playlist_id = self._extract_playlist_id(playlist_raw)
+                playlist_title, channel_id = self._get_playlist_info(playlist_id, api_key)
+                video_ids = self._fetch_all_playlist_video_ids(playlist_id, api_key)
+                channel_title = playlist_title
+                safe_pl = re.sub(r'[\\/*?:"<>|]', '_', playlist_title)[:60]
+                folder_tag = f'Listas/{safe_pl}'
+            else:
+                channel_id = self._resolve_channel_id(channel_input, api_key)
+                channel_title = self._get_channel_title(channel_id, api_key)
+                uploads_id = self._get_uploads_playlist_id(channel_id, api_key)
+                only_live = source == 'En vivo'
+                video_ids = self._fetch_all_channel_video_ids(uploads_id, api_key, only_live)
+                if only_live:
+                    folder_tag = 'En vivo'
         except QuotaExceededError:
             self._stop_progress()
             self._set_status(
-                'Se agotó la cuota diaria de la API de YouTube. El progreso de canales que '
-                'ya se estaban transcribiendo quedó guardado; se reanuda automáticamente '
-                'cuando vuelvas a analizar el mismo canal.'
+                'Se agotó la cuota diaria de la API de YouTube. El progreso ya guardado '
+                'se reanuda cuando vuelvas a analizar el mismo canal.'
             )
             return
         except Exception as e:
             self._stop_progress()
-            self._set_status(f'No se pudo analizar el canal: {e}')
+            self._set_status(f'No se pudo analizar: {e}')
             return
 
         self._stop_progress()
         if not video_ids:
-            self._set_status('No se encontraron videos (sin Shorts/en vivo) en ese canal')
+            self._set_status('No se encontraron videos con esos criterios')
             return
 
         saved = self._load_channel_resume_state()
@@ -993,6 +1087,7 @@ class RootWidget(BoxLayout):
             'video_ids': video_ids,
             'processed_index': processed_index,
             'results': [None] * len(video_ids),
+            'folder_tag': folder_tag,
         }
         self._save_channel_resume_state()
 
@@ -1000,7 +1095,7 @@ class RootWidget(BoxLayout):
         self._set_channel_page(1, max(1, (total + BATCH_SIZE - 1) // BATCH_SIZE))
         self._render_channel_page(1)
 
-        info = f'{channel_title} - {total} videos (excluye Shorts y en vivo)'
+        info = f'{channel_title} - {total} video{"s" if total != 1 else ""}'
         if processed_index:
             info += f' - {processed_index} ya procesados anteriormente'
         self._set_channel_info(info)
@@ -1035,6 +1130,58 @@ class RootWidget(BoxLayout):
         for e in err.get('errors', []):
             if e.get('reason') in ('quotaExceeded', 'dailyLimitExceeded'):
                 raise QuotaExceededError()
+
+    def _extract_playlist_id(self, raw):
+        raw = raw.strip()
+        m = re.search(r'[?&]list=([0-9A-Za-z_-]+)', raw)
+        if m:
+            return m.group(1)
+        return raw
+
+    def _get_playlist_info(self, playlist_id, api_key):
+        resp = requests.get(
+            'https://www.googleapis.com/youtube/v3/playlists',
+            params={'part': 'snippet', 'id': playlist_id, 'key': api_key},
+            timeout=15,
+        )
+        data = resp.json()
+        self._raise_if_quota_error(data)
+        items = data.get('items', [])
+        if not items:
+            raise Exception('Lista de reproducción no encontrada')
+        sn = items[0]['snippet']
+        return sn.get('title', playlist_id), sn.get('channelId', 'canal')
+
+    def _fetch_all_playlist_video_ids(self, playlist_id, api_key):
+        result_ids = []
+        page_token = None
+        pages_scanned = 0
+        max_pages = 40
+        while pages_scanned < max_pages:
+            params = {
+                'part': 'contentDetails', 'playlistId': playlist_id,
+                'maxResults': 50, 'key': api_key,
+            }
+            if page_token:
+                params['pageToken'] = page_token
+            resp = requests.get(
+                'https://www.googleapis.com/youtube/v3/playlistItems',
+                params=params, timeout=15,
+            )
+            data = resp.json()
+            self._raise_if_quota_error(data)
+            items = data.get('items', [])
+            pages_scanned += 1
+            if not items:
+                break
+            for it in items:
+                vid = it.get('contentDetails', {}).get('videoId')
+                if vid:
+                    result_ids.append(vid)
+            page_token = data.get('nextPageToken')
+            if not page_token:
+                break
+        return result_ids
 
     def _resolve_channel_id(self, channel_input, api_key):
         channel_input = channel_input.strip()
@@ -1116,10 +1263,11 @@ class RootWidget(BoxLayout):
         h, mi, se = m.groups()
         return int(h or 0) * 3600 + int(mi or 0) * 60 + int(se or 0)
 
-    def _fetch_all_channel_video_ids(self, uploads_id, api_key):
-        """Recorre TODA la lista de subidas del canal, excluyendo Shorts
-        (duración <= 60s) y transmisiones en vivo. Tope de seguridad:
-        2000 videos revisados."""
+    def _fetch_all_channel_video_ids(self, uploads_id, api_key, only_live=False):
+        """Recorre TODA la lista de subidas del canal.
+        only_live=False (fuente 'Videos'): excluye Shorts (<=60s) y en vivo.
+        only_live=True  (fuente 'En vivo'): conserva solo las transmisiones en vivo.
+        Tope de seguridad: 2000 videos revisados."""
         result_ids = []
         page_token = None
         pages_scanned = 0
@@ -1162,14 +1310,20 @@ class RootWidget(BoxLayout):
                 d = details.get(vid)
                 if not d:
                     continue
-                if 'liveStreamingDetails' in d:
-                    continue
-                duration = self._parse_iso8601_duration(
-                    d.get('contentDetails', {}).get('duration', '')
-                )
-                if duration <= 60:
-                    continue
-                result_ids.append(vid)
+                is_live = 'liveStreamingDetails' in d
+                if only_live:
+                    if not is_live:
+                        continue
+                    result_ids.append(vid)
+                else:
+                    if is_live:
+                        continue
+                    duration = self._parse_iso8601_duration(
+                        d.get('contentDetails', {}).get('duration', '')
+                    )
+                    if duration <= 60:
+                        continue
+                    result_ids.append(vid)
 
             page_token = data.get('nextPageToken')
             if not page_token:
@@ -1294,7 +1448,7 @@ class RootWidget(BoxLayout):
         total = len(results)
         start = (page - 1) * BATCH_SIZE
         end = min(start + BATCH_SIZE, total)
-        self.ids.results_container.clear_widgets()
+        self.ids.results_container_channel.clear_widgets()
         for i in range(start, end):
             entry = results[i]
             row = Factory.ChannelRow()
@@ -1319,7 +1473,7 @@ class RootWidget(BoxLayout):
                 row.row_title = f'{i + 1:03d} - (en cola)'
                 row.status_text = 'En cola'
                 row.status_color = list(COLOR_NEUTRAL)
-            self.ids.results_container.add_widget(row)
+            self.ids.results_container_channel.add_widget(row)
 
     def channel_next_page(self):
         if self.channel_page < self.channel_page_count:
@@ -1361,14 +1515,15 @@ class RootWidget(BoxLayout):
 
     # ---------- exportar lote (barra inferior) ----------
 
-    def export_batch(self):
-        cards = list(self.ids.results_container.children)
+    def export_batch(self, which):
+        container_id = 'results_container_links' if which == 'links' else 'results_container_channel'
+        cards = list(self.ids[container_id].children)
         if not cards:
             return
-        threading.Thread(target=self._export_thread, args=(cards,), daemon=True).start()
+        threading.Thread(target=self._export_thread, args=(cards, which), daemon=True).start()
 
-    def _export_thread(self, cards):
-        is_channel = self.active_tab == 'channel' and bool(self._channel_state.get('channel_id'))
+    def _export_thread(self, cards, which):
+        is_channel = which == 'channel' and bool(self._channel_state.get('channel_id'))
         count, errors = 0, 0
         for card in reversed(cards):
             text = getattr(card, 'transcript_text', '')
@@ -1398,8 +1553,6 @@ class RootWidget(BoxLayout):
     # ---------- almacenamiento ----------
 
     def save_image_public(self, data, filename):
-        """Guarda una imagen en la galería pública del teléfono (visible en
-        Fotos), con respaldo a la carpeta privada de la app si algo falla."""
         if platform == 'android':
             try:
                 return self._save_to_media_store_images(data, filename)
@@ -1415,8 +1568,6 @@ class RootWidget(BoxLayout):
         return path
 
     def save_text_public(self, data, filename):
-        """Guarda un archivo de texto en Descargas/TranscripcionesYoutube/Videos,
-        con respaldo a la carpeta privada de la app si algo falla."""
         if platform == 'android':
             try:
                 return self._save_to_media_store_downloads(data, filename)
@@ -1432,26 +1583,30 @@ class RootWidget(BoxLayout):
             f.write(data)
         return path
 
+    def _channel_relative_path(self, channel_id, lang_folder):
+        """Construye Canales/<id>/[En vivo|Listas/<nombre>/]<Idioma X>."""
+        state = self._channel_state
+        tag = state.get('folder_tag')
+        if tag:
+            return f'Canales/{channel_id}/{tag}/{lang_folder}'
+        return f'Canales/{channel_id}/{lang_folder}'
+
     def save_channel_pair(self, image_bytes, text_bytes, index, title, video_id):
-        """Guarda la miniatura (.jpg) y la transcripción (.txt) de un video
-        de canal en: Descargas/TranscripcionesYoutube/Canales/<channel_id>/
-        <Idioma Original|Idioma Español>/NNN - Título.(jpg|txt)"""
         state = self._channel_state
         channel_id = state.get('channel_id', 'canal')
         lang_folder = 'Idioma Español' if self.ids.lang_spinner_channel.text == 'Español' else 'Idioma Original'
         safe_title = re.sub(r'[\\/*?:"<>|]', '_', title or video_id or 'video').strip()[:80]
         base_name = f'{index:03d} - {safe_title}'
+        rel_path = self._channel_relative_path(channel_id, lang_folder)
 
         if platform == 'android':
             try:
-                self._save_channel_pair_media_store(
-                    image_bytes, text_bytes, channel_id, lang_folder, base_name
-                )
-                return f'Canales/{channel_id}/{lang_folder}'
+                self._save_channel_pair_media_store(image_bytes, text_bytes, rel_path, base_name)
+                return rel_path
             except Exception:
                 pass
             base = self._app_storage_dir()
-            folder = os.path.join(base, 'Canales', channel_id, lang_folder)
+            folder = os.path.join(base, *rel_path.split('/'))
             os.makedirs(folder, exist_ok=True)
             if image_bytes:
                 with open(os.path.join(folder, base_name + '.jpg'), 'wb') as f:
@@ -1460,7 +1615,7 @@ class RootWidget(BoxLayout):
                 f.write(text_bytes)
             return folder
 
-        folder = os.path.join(os.getcwd(), 'Canales', channel_id, lang_folder)
+        folder = os.path.join(os.getcwd(), *rel_path.split('/'))
         os.makedirs(folder, exist_ok=True)
         if image_bytes:
             with open(os.path.join(folder, base_name + '.jpg'), 'wb') as f:
@@ -1552,7 +1707,7 @@ class RootWidget(BoxLayout):
                 f.write(data)
             return path
 
-    def _save_channel_pair_media_store(self, image_bytes, text_bytes, channel_id, lang_folder, base_name):
+    def _save_channel_pair_media_store(self, image_bytes, text_bytes, rel_path, base_name):
         from jnius import autoclass
 
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
@@ -1560,7 +1715,7 @@ class RootWidget(BoxLayout):
         VERSION = autoclass('android.os.Build$VERSION')
         self._request_legacy_storage_permission(VERSION.SDK_INT)
 
-        relative_path = f'Download/TranscripcionesYoutube/Canales/{channel_id}/{lang_folder}'
+        relative_path = f'Download/TranscripcionesYoutube/{rel_path}'
 
         if VERSION.SDK_INT >= 29:
             ContentValues = autoclass('android.content.ContentValues')
@@ -1597,8 +1752,7 @@ class RootWidget(BoxLayout):
                 Environment.DIRECTORY_DOWNLOADS
             )
             folder = os.path.join(
-                downloads_dir.getAbsolutePath(), 'TranscripcionesYoutube',
-                'Canales', channel_id, lang_folder,
+                downloads_dir.getAbsolutePath(), 'TranscripcionesYoutube', *rel_path.split('/')
             )
             os.makedirs(folder, exist_ok=True)
             if image_bytes:
@@ -1628,8 +1782,6 @@ class TranscriptApp(App):
         return RootWidget()
 
     def _disable_default_loading_spinner(self):
-        """Reemplaza el ícono giratorio de 'cargando' que Kivy muestra por
-        defecto en toda imagen asíncrona (AsyncImage) mientras se descarga."""
         try:
             path = os.path.join(self.user_data_dir, 'blank.png')
             os.makedirs(self.user_data_dir, exist_ok=True)
