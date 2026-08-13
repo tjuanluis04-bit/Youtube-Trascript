@@ -262,6 +262,7 @@ KV = '''
 Builder.load_string(KV)
 
 ROOT_KV = '''
+#:import NoTransition kivy.uix.screenmanager.NoTransition
 <RootWidget>:
     orientation: 'vertical'
     padding: [dp(14), dp(10)]
