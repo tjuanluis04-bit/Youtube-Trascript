@@ -1779,8 +1779,31 @@ class TranscriptApp(App):
     title = 'Transcripciones YouTube'
 
     def build(self):
-        self._disable_default_loading_spinner()
-        return RootWidget()
+        try:
+            self._disable_default_loading_spinner()
+            return RootWidget()
+        except Exception:
+            import traceback
+            from kivy.uix.scrollview import ScrollView
+            from kivy.uix.label import Label
+            error_text = traceback.format_exc()
+            try:
+                with open(os.path.join(self.user_data_dir, 'crash_log.txt'), 'w', encoding='utf-8') as f:
+                    f.write(error_text)
+            except Exception:
+                pass
+            scroll = ScrollView()
+            label = Label(
+                text=error_text,
+                size_hint_y=None,
+                text_size=(400, None),
+                halign='left',
+                valign='top',
+                color=(1, 1, 1, 1),
+            )
+            label.bind(texture_size=lambda inst, val: setattr(label, 'height', val[1]))
+            scroll.add_widget(label)
+            return scroll
 
     def _disable_default_loading_spinner(self):
         try:
