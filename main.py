@@ -282,11 +282,11 @@ ROOT_KV = '''
             color: 1, 1, 1, 1
             canvas.before:
                 Color:
-                    rgba: (0.20, 0.62, 0.88, 1) if screen_manager.current == 'links' else (0.15, 0.15, 0.17, 1)
+                    rgba: (0.20, 0.62, 0.88, 1) if root.ids.screen_manager.current == 'links' else (0.15, 0.15, 0.17, 1)
                 Rectangle:
                     pos: self.pos
                     size: self.size
-            on_release: screen_manager.current = 'links'
+            on_release: root.ids.screen_manager.current = 'links'
         Button:
             id: tab_channel_btn
             text: 'Transcribir canal completo'
@@ -298,11 +298,11 @@ ROOT_KV = '''
             color: 1, 1, 1, 1
             canvas.before:
                 Color:
-                    rgba: (0.20, 0.62, 0.88, 1) if screen_manager.current == 'channel' else (0.15, 0.15, 0.17, 1)
+                    rgba: (0.20, 0.62, 0.88, 1) if root.ids.screen_manager.current == 'channel' else (0.15, 0.15, 0.17, 1)
                 Rectangle:
                     pos: self.pos
                     size: self.size
-            on_release: screen_manager.current = 'channel'
+            on_release: root.ids.screen_manager.current = 'channel'
 
     BoxLayout:
         size_hint_y: None
@@ -391,7 +391,7 @@ ROOT_KV = '''
                     SecondaryButton:
                         id: export_button_links
                         text: 'Exportar lote a .txt'
-                        disabled: not results_container_links.children
+                        disabled: not root.ids.results_container_links.children
                         on_release: root.export_batch('links')
                     SecondaryButton:
                         text: 'Vaciar caché'
@@ -450,8 +450,8 @@ ROOT_KV = '''
                             hint_text: 'Enlace o ID de la lista de reproducción'
                             multiline: False
                             size_hint_y: None
-                            height: dp(42) if source_spinner.text == 'Lista de reproducción' else 0
-                            opacity: 1 if source_spinner.text == 'Lista de reproducción' else 0
+                            height: dp(42) if root.ids.source_spinner.text == 'Lista de reproducción' else 0
+                            opacity: 1 if root.ids.source_spinner.text == 'Lista de reproducción' else 0
                             font_size: '13sp'
 
                         BoxLayout:
@@ -500,9 +500,9 @@ ROOT_KV = '''
                         SecondaryButton:
                             text: 'Descargar completados (imagen + texto)'
                             size_hint_y: None
-                            height: dp(38) if results_container_channel.children else 0
-                            opacity: 1 if results_container_channel.children else 0
-                            disabled: not results_container_channel.children
+                            height: dp(38) if root.ids.results_container_channel.children else 0
+                            opacity: 1 if root.ids.results_container_channel.children else 0
+                            disabled: not root.ids.results_container_channel.children
                             on_release: root.download_all_channel_pairs()
 
                         BoxLayout:
@@ -537,7 +537,7 @@ ROOT_KV = '''
                     SecondaryButton:
                         id: export_button_channel
                         text: 'Exportar lote a .txt'
-                        disabled: not results_container_channel.children
+                        disabled: not root.ids.results_container_channel.children
                         on_release: root.export_batch('channel')
                     SecondaryButton:
                         text: 'Vaciar caché'
