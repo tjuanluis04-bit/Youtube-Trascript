@@ -24,7 +24,7 @@ from kivy.loader import Loader
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.widget import Widget
 from kivy.uix.screenmanager import ScreenManager, Screen, NoTransition
-from kivy.properties import StringProperty, NumericProperty
+from kivy.properties import StringProperty, NumericProperty, BooleanProperty
 from kivy.animation import Animation
 from kivy.metrics import dp
 from kivy.utils import platform
@@ -271,38 +271,43 @@ ROOT_KV = '''
     BoxLayout:
         size_hint_y: None
         height: dp(44)
-        Button:
+        ToggleButton:
             id: tab_links_btn
             text: 'Transcribir por enlace(s)'
             font_size: '13sp'
             bold: True
+            group: 'tabs'
+            state: 'down'
             background_normal: ''
             background_down: ''
             background_color: 0, 0, 0, 0
             color: 1, 1, 1, 1
             canvas.before:
                 Color:
-                    rgba: (0.20, 0.62, 0.88, 1) if root.ids.screen_manager.current == 'links' else (0.15, 0.15, 0.17, 1)
+                    rgba: (0.20, 0.62, 0.88, 1) if self.state == 'down' else (0.15, 0.15, 0.17, 1)
                 Rectangle:
                     pos: self.pos
                     size: self.size
-            on_release: root.ids.screen_manager.current = 'links'
-        Button:
+            on_state:
+                if self.state == 'down': root.ids.screen_manager.current = 'links'
+        ToggleButton:
             id: tab_channel_btn
             text: 'Transcribir canal completo'
             font_size: '13sp'
             bold: True
+            group: 'tabs'
             background_normal: ''
             background_down: ''
             background_color: 0, 0, 0, 0
             color: 1, 1, 1, 1
             canvas.before:
                 Color:
-                    rgba: (0.20, 0.62, 0.88, 1) if root.ids.screen_manager.current == 'channel' else (0.15, 0.15, 0.17, 1)
+                    rgba: (0.20, 0.62, 0.88, 1) if self.state == 'down' else (0.15, 0.15, 0.17, 1)
                 Rectangle:
                     pos: self.pos
                     size: self.size
-            on_release: root.ids.screen_manager.current = 'channel'
+            on_state:
+                if self.state == 'down': root.ids.screen_manager.current = 'channel'
 
     BoxLayout:
         size_hint_y: None
@@ -391,7 +396,7 @@ ROOT_KV = '''
                     SecondaryButton:
                         id: export_button_links
                         text: 'Exportar lote a .txt'
-                        disabled: not root.ids.results_container_links.children
+                        disabled: not root.has_links_results
                         on_release: root.export_batch('links')
                     SecondaryButton:
                         text: 'Vaciar caché'
@@ -500,9 +505,9 @@ ROOT_KV = '''
                         SecondaryButton:
                             text: 'Descargar completados (imagen + texto)'
                             size_hint_y: None
-                            height: dp(38) if root.ids.results_container_channel.children else 0
-                            opacity: 1 if root.ids.results_container_channel.children else 0
-                            disabled: not root.ids.results_container_channel.children
+                            height: dp(38) if root.has_channel_results else 0
+                            opacity: 1 if root.has_channel_results else 0
+                            disabled: not root.has_channel_results
                             on_release: root.download_all_channel_pairs()
 
                         BoxLayout:
@@ -537,7 +542,7 @@ ROOT_KV = '''
                     SecondaryButton:
                         id: export_button_channel
                         text: 'Exportar lote a .txt'
-                        disabled: not root.ids.results_container_channel.children
+                        disabled: not root.has_channel_results
                         on_release: root.export_batch('channel')
                     SecondaryButton:
                         text: 'Vaciar caché'
@@ -654,6 +659,8 @@ class RootWidget(BoxLayout):
 
     channel_page = NumericProperty(1)
     channel_page_count = NumericProperty(0)
+    has_links_results = BooleanProperty(False)
+    has_channel_results = BooleanProperty(False)
 
     _cache = {}
     _cache_path = None
@@ -856,6 +863,7 @@ class RootWidget(BoxLayout):
     def fetch_transcript(self):
         text = self.ids.url_input.text.strip()
         self.ids.results_container_links.clear_widgets()
+        self.has_links_results = False
         video_ids = self.extract_video_ids(text)
 
         if not video_ids:
@@ -1012,6 +1020,7 @@ class RootWidget(BoxLayout):
             card.card_status_color = list(COLOR_ERROR)
         card.card_status = error
         self.ids.results_container_links.add_widget(card)
+        self.has_links_results = True
 
     # ---------- analizar canal / lista de reproducción ----------
 
@@ -1094,7 +1103,7 @@ class RootWidget(BoxLayout):
 
         total = len(video_ids)
         self._set_channel_page(1, max(1, (total + BATCH_SIZE - 1) // BATCH_SIZE))
-        self._render_channel_page(1)
+        self._render_channel_page_threadsafe(1)
 
         info = f'{channel_title} - {total} video{"s" if total != 1 else ""}'
         if processed_index:
@@ -1444,6 +1453,10 @@ class RootWidget(BoxLayout):
         if page == self.channel_page:
             self._render_channel_page(self.channel_page)
 
+    @mainthread
+    def _render_channel_page_threadsafe(self, page):
+        self._render_channel_page(page)
+
     def _render_channel_page(self, page):
         results = self._channel_state.get('results', [])
         total = len(results)
@@ -1475,6 +1488,7 @@ class RootWidget(BoxLayout):
                 row.status_text = 'En cola'
                 row.status_color = list(COLOR_NEUTRAL)
             self.ids.results_container_channel.add_widget(row)
+        self.has_channel_results = bool(self.ids.results_container_channel.children)
 
     def channel_next_page(self):
         if self.channel_page < self.channel_page_count:
